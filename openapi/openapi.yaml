@@ -1,0 +1,226 @@
+# ─────────────────────────────────────────────────────────────
+# RideMate API — the contract.
+#
+# THIS FILE IS THE SOURCE OF TRUTH, not a description of the code.
+#
+# It is hand-authored and never generated from controllers. Generation would
+# invert the relationship: the code would lead and the contract would follow,
+# so an implementation detail could change what RideMate promises without
+# anyone reviewing a diff. The client repository is separate and develops
+# against this file, not against Laravel.
+#
+# Synchronisation is enforced by tests, not by discipline. Every documented
+# response is validated against the schema below in tests/Contract, so drift
+# is a failing build rather than a review comment.
+#
+# It documents ONLY what the service actually serves today. Writing a future
+# endpoint here would be the same class of untruth as a button claiming
+# something happened — and the contract tests could not validate it.
+# ─────────────────────────────────────────────────────────────
+
+openapi: 3.1.0
+
+info:
+  title: RideMate API
+  version: 0.1.0
+  summary: Journey sharing and cost sharing for Istanbul.
+  description: |
+    RideMate connects people whose journeys are already compatible. A driver is
+    making the trip regardless; the product finds passengers going the same way
+    and lets them share the journey's legitimate costs.
+
+    It is not taxi, ride-hailing, chauffeur or commercial passenger transport,
+    and the contract reflects that: there is no fare, no price, no earnings and
+    no payout anywhere in it, now or later. A test enforces that vocabulary
+    against this file.
+
+    Phase 8 exposes operational endpoints only. The versioned product API at
+    `/api/v1` exists, is empty, and gains its first resources with
+    authentication in Phase 9.
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+
+tags:
+  - name: Operations
+    description: Liveness and readiness probes. Not part of the versioned product API.
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [Operations]
+      summary: Liveness
+      description: |
+        Reports that the process is alive. **Touches no dependency**, so a
+        database outage must never affect it — otherwise an orchestrator would
+        restart a healthy process because something else broke, turning one
+        outage into two.
+      responses:
+        '200':
+          description: The process is alive.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /ready:
+    get:
+      operationId: getReady
+      tags: [Operations]
+      summary: Readiness
+      description: |
+        Reports whether every dependency needed to serve traffic is available.
+
+        PostGIS is a hard dependency rather than a nice-to-have: route matching
+        is geographic, so a database without it cannot serve RideMate even
+        though it accepts connections.
+
+        The response names which check failed and never why. A readiness probe
+        is reachable by anything that can reach the service, so it must not
+        publish a host, a port, a DSN, a driver message or a SQL fragment. The
+        reason lives in the log line for the request.
+      responses:
+        '200':
+          description: Every dependency is ready.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+        '503':
+          description: At least one dependency is unavailable.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+
+components:
+  headers:
+    RequestId:
+      description: |
+        The correlation id for this request, echoed on every response. If the
+        caller supplies a well-formed UUID it is honoured, so a retry can be
+        correlated with its original attempt; anything else is replaced.
+
+        This is a transport concern and never a domain identifier.
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status, service, environment, release]
+      properties:
+        status:
+          type: string
+          const: ok
+        service:
+          type: string
+          description: The application name.
+        environment:
+          type: string
+          description: The runtime environment, for example `local` or `production`.
+        release:
+          type: string
+          description: The deployed build identifier. Never describes infrastructure.
+
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        checks:
+          type: object
+          additionalProperties: false
+          required: [database, postgis]
+          properties:
+            database:
+              $ref: '#/components/schemas/CheckResult'
+            postgis:
+              $ref: '#/components/schemas/CheckResult'
+
+    CheckResult:
+      type: string
+      enum: [ok, failed]
+      description: Whether the dependency answered. Never says why it did not.
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, request_id]
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              description: |
+                **Developer-facing English. Clients must never display it.**
+
+                The RideMate client owns its own localized copy with Turkish as
+                the source language. Server-authored display text would fork
+                message ownership across two repositories and two release
+                cadences. Map `code` to a client string instead.
+
+                On an unexpected failure outside a debug build this is a fixed
+                sentence: the underlying message can carry a file path, a SQL
+                fragment, a hostname or a credential.
+            details:
+              type: object
+              description: |
+                Field-level failures. Present only for validation errors;
+                absent everywhere else, so its presence is meaningful.
+              additionalProperties:
+                type: array
+                items:
+                  type: string
+            request_id:
+              type: string
+              format: uuid
+              description: Matches the `X-Request-Id` response header.
+
+    ErrorCode:
+      type: string
+      description: |
+        The stable machine contract. Clients map these to their own localized
+        copy, so renaming one is a breaking contract change.
+      enum:
+        - bad_request
+        - unauthenticated
+        - forbidden
+        - not_found
+        - method_not_allowed
+        - conflict
+        - validation_failed
+        - rate_limited
+        - internal_error
+
+  responses:
+    NotFound:
+      description: The requested resource does not exist.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
