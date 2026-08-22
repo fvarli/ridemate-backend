@@ -17,6 +17,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Release
+    |--------------------------------------------------------------------------
+    |
+    | Identifies the deployed build in logs and on /health. Supplied by CI at
+    | build time; 'dev' locally. Never a secret, and never anything that
+    | describes the infrastructure.
+    |
+    */
+
+    'release' => env('APP_RELEASE', 'dev'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Environment
     |--------------------------------------------------------------------------
     |

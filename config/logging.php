@@ -1,5 +1,6 @@
 <?php
 
+use Monolog\Formatter\JsonFormatter;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
@@ -56,6 +57,22 @@ return [
             'driver' => 'stack',
             'channels' => explode(',', (string) env('LOG_STACK', 'single')),
             'ignore_exceptions' => false,
+        ],
+
+        /*
+         * Structured application log.
+         *
+         * One JSON object per line, so a collector can be pointed at the file
+         * later without changing a line of application code. No observability
+         * SaaS is integrated in Phase 8 — none has a consumer at this size,
+         * and each would be an integration to maintain.
+         */
+        'json' => [
+            'driver' => 'monolog',
+            'handler' => StreamHandler::class,
+            'with' => ['stream' => storage_path('logs/ridemate.log')],
+            'formatter' => JsonFormatter::class,
+            'level' => env('LOG_LEVEL', 'debug'),
         ],
 
         'single' => [

@@ -1,0 +1,21 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+
+parameters:
+    # Level 8 from day one. A level chosen to make an existing codebase pass is
+    # a level that finds nothing; this codebase is small enough to start at the
+    # top and stay there, so raising it later never becomes a project.
+    level: 8
+
+    paths:
+        - app
+        - bootstrap
+        - config
+        - database
+        - routes
+        - tests
+
+    # Fail on anything the analyser cannot reason about rather than silently
+    # skipping it.
+    treatPhpDocTypesAsCertain: true
+    reportUnmatchedIgnoredErrors: true
