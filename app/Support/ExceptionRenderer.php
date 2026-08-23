@@ -31,7 +31,7 @@ final class ExceptionRenderer
         return ApiError::response(
             $request,
             $code,
-            self::message($e, $status),
+            self::message($e, $code, $status),
             $status,
             $details,
         );
@@ -75,21 +75,42 @@ final class ExceptionRenderer
     }
 
     /**
-     * Developer-facing English, and never the raw message of an unexpected
-     * failure outside a debug build.
+     * Developer-facing English, and never anything the caller supplied.
      *
-     * An exception message can carry a file path, a SQL fragment, a hostname
-     * or a credential, and a client could not act on any of it. The log line
-     * for this request keeps the detail; the response keeps the code.
+     * Framework messages are useful in a stack trace and wrong in a response
+     * body. Two kinds of leak matter here:
+     *
+     *   REFLECTED INPUT. Laravel answers a 404 with "The route api/v1/x could
+     *   not be found." and a 405 with the attempted route plus the list of
+     *   verbs it does support. Both echo the request back and the second maps
+     *   the surface for whoever is probing it.
+     *
+     *   INTERNAL DETAIL. ModelNotFoundException also maps to 404, and its
+     *   message reads "No query results for model [App\Models\Route] 1234" —
+     *   an internal class name and a record id. No model exists yet, so it
+     *   cannot fire today; the first one lands in Phase 9, and this branch
+     *   means it never can.
+     *
+     * These are fixed in every environment rather than only in production.
+     * A contract that changes shape when APP_DEBUG flips is a contract that
+     * gets tested in one shape and shipped in another.
+     *
+     * The 500 branch keeps its existing behaviour, because a developer running
+     * with debug on genuinely needs the real exception and no client is
+     * reading it.
      */
-    private static function message(Throwable $e, int $status): string
+    private static function message(Throwable $e, string $code, int $status): string
     {
         if ($status >= 500 && ! config('app.debug')) {
             return 'An unexpected error occurred.';
         }
 
-        $message = $e->getMessage();
-
-        return $message !== '' ? $message : 'Request failed.';
+        return match ($code) {
+            ApiError::NOT_FOUND => 'The requested resource was not found.',
+            ApiError::METHOD_NOT_ALLOWED => 'The request method is not supported for this resource.',
+            // Laravel's own text here is already generic ("The given data was
+            // invalid.") and the field-level detail lives in `details`.
+            default => $e->getMessage() !== '' ? $e->getMessage() : 'Request failed.',
+        };
     }
 }

@@ -181,9 +181,15 @@ components:
                 message ownership across two repositories and two release
                 cadences. Map `code` to a client string instead.
 
-                On an unexpected failure outside a debug build this is a fixed
-                sentence: the underlying message can carry a file path, a SQL
-                fragment, a hostname or a credential.
+                Fixed wording for `not_found` and `method_not_allowed` in
+                every environment, and for `internal_error` outside a debug
+                build. Framework text for those cases echoes the requested
+                path, enumerates the verbs a route accepts, or names an
+                internal class and record id — none of which a caller can act
+                on, and all of which describe the service to whoever is
+                probing it.
+
+                Never contains anything the caller supplied.
             details:
               type: object
               description: |
@@ -213,14 +219,3 @@ components:
         - validation_failed
         - rate_limited
         - internal_error
-
-  responses:
-    NotFound:
-      description: The requested resource does not exist.
-      headers:
-        X-Request-Id:
-          $ref: '#/components/headers/RequestId'
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
