@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use RuntimeException;
 use Symfony\Component\HttpKernel\Exception\TooManyRequestsHttpException;
+use Tests\Support\CleansCommittedRows;
 use Tests\TestCase;
 
 /**
@@ -26,6 +27,8 @@ use Tests\TestCase;
  */
 final class PasscodeDeliveryTest extends TestCase
 {
+    use CleansCommittedRows;
+
     /**
      * Truncation, NOT RefreshDatabase — and the difference is the point.
      *
@@ -60,6 +63,14 @@ final class PasscodeDeliveryTest extends TestCase
 
         $this->sms = new InMemorySmsSender;
         $this->app->instance(SmsSender::class, $this->sms);
+    }
+
+    protected function tearDown(): void
+    {
+        // Before parent::tearDown(), which destroys the application.
+        $this->truncateCommittedAuthRows();
+
+        parent::tearDown();
     }
 
     public function test_a_passcode_is_dispatched_to_the_number_that_asked(): void
