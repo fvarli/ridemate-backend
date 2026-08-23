@@ -1,58 +1,134 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# RideMate — Backend
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+The API behind RideMate, a trust-first journey-sharing product for İstanbul.
 
-## About Laravel
+RideMate is **not** taxi or ride-hailing. A driver is already making the journey; the
+product connects people whose routes are compatible and lets them share the journey's
+legitimate costs. That framing is enforced in this repository rather than merely
+described: a test rejects taxi and payment vocabulary in the API contract.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+The Flutter client lives in a separate repository and develops against
+[`openapi/openapi.yaml`](openapi/openapi.yaml), not against this code.
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Status
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+**Phase 8 — bootstrap and API contract foundation.**
 
-## Learning Laravel
+This service boots, connects to PostgreSQL, enables PostGIS, reports liveness and
+readiness, answers every error in one documented shape, carries a correlation id through
+its logs, and is held to a hand-written OpenAPI contract by its own tests.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+**It has no product domain.** No accounts, no authentication, no routes, no trips, no
+messages — and no tables for any of them. The database contains exactly two tables:
+Laravel's own `migrations` ledger and PostGIS's `spatial_ref_sys`. The versioned API at
+`/api/v1` exists, is empty, and gains its first endpoints with authentication in Phase 9.
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+That emptiness is the deliverable. Schema written before the endpoints that use it is
+schema written against a guess, and the account model in particular is the thing most
+likely to change once the real verification flows are designed.
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+## Requirements
 
-## Agentic Development
+| Tool | Version |
+|---|---|
+| PHP | **8.4** |
+| Composer | 2.x |
+| PostgreSQL | 16 |
+| PostGIS | 3.x |
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+**Local development is native. There is no Dockerfile and no compose file**, and Docker is
+not required to run or test this project. CI uses a PostGIS service container, which is
+isolated infrastructure on a throwaway runner and changes nothing here.
+
+### One-time system prerequisite
+
+PostGIS is a separate system package and does not arrive with PostgreSQL:
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+sudo apt install postgresql-16-postgis-3
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+The extension itself is enabled by a migration, so a fresh database needs no manual SQL.
 
-## Contributing
+## Setup
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+```bash
+composer install
+cp .env.example .env
+php8.4 artisan key:generate
+```
 
-## Code of Conduct
+Create both databases. The test suite is destructive and must never touch the development
+one:
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```bash
+createdb ridemate
+createdb ridemate_test
+```
 
-## Security Vulnerabilities
+Then set `DB_PASSWORD` in `.env`. **`.env` is git-ignored and must never be committed;**
+`.env.example` carries placeholders only and no real credential belongs in it.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+```bash
+php8.4 artisan migrate
+php8.4 artisan serve
+```
 
-## License
+```bash
+curl localhost:8000/health
+curl localhost:8000/ready
+```
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+## PHP 8.4
+
+RideMate requires PHP 8.4, and `tool/check.sh` refuses to run on anything else. If the
+system default `php` is older — as it is on the primary development machine — invoke the
+correct binary explicitly:
+
+```bash
+php8.4 artisan …
+php8.4 "$(which composer)" …
+```
+
+Nothing here changes the system PHP, and no `update-alternatives` is required.
+
+## Quality gates
+
+One reproducible entry point, used locally and by CI:
+
+```bash
+./tool/check.sh
+```
+
+which runs, and requires a clean result from:
+
+```bash
+php8.4 vendor/bin/pint --test          # formatting
+php8.4 vendor/bin/phpstan analyse      # static analysis, level 8
+php8.4 vendor/bin/phpunit              # unit, feature and contract tests
+```
+
+The OpenAPI contract tests and the vocabulary guard live inside the PHPUnit suite rather
+than as separate steps, because a contract check that can be skipped is a contract check
+that eventually is.
+
+CI runs this same script rather than a copy of its steps, so the two cannot drift apart.
+
+## The API contract
+
+[`openapi/openapi.yaml`](openapi/openapi.yaml) is the **source of truth**. It is
+hand-authored and never generated from controllers: generation would invert the
+relationship, letting an implementation detail change what RideMate promises without
+anyone reviewing a diff.
+
+Synchronisation is enforced rather than trusted — contract tests run real responses
+through the schemas the spec documents, so drift is a failing build. The spec describes
+only what the service actually serves today.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Stack, structure, identifiers, auth architecture, module roadmap, non-scope |
+| [`docs/api-conventions.md`](docs/api-conventions.md) | Versioning, naming, pagination, idempotency, errors, vocabulary boundary |
+| [`docs/decisions/`](docs/decisions/) | Architecture decision records |
