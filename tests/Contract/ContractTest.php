@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Contract;
 
 use App\Support\ApiError;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -19,6 +20,7 @@ use Tests\TestCase;
  */
 final class ContractTest extends TestCase
 {
+    use RefreshDatabase;
     use ValidatesTheContract;
 
     public function test_the_specification_itself_is_valid(): void
@@ -36,6 +38,17 @@ final class ContractTest extends TestCase
     public function test_health_matches_its_documented_operation(): void
     {
         $this->assertMatchesOperation($this->getJson('/health'), '/health');
+    }
+
+    public function test_ready_success_matches_its_documented_operation(): void
+    {
+        // Needs a live database with PostGIS, so it runs against ridemate_test.
+        $this->refreshDatabase();
+
+        $response = $this->getJson('/ready');
+
+        $response->assertOk();
+        $this->assertMatchesOperation($response, '/ready');
     }
 
     public function test_ready_failure_matches_its_documented_operation(): void
