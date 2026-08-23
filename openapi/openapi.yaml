@@ -34,9 +34,13 @@ info:
     no payout anywhere in it, now or later. A test enforces that vocabulary
     against this file.
 
-    Phase 8 exposes operational endpoints only. The versioned product API at
-    `/api/v1` exists, is empty, and gains its first resources with
-    authentication in Phase 9.
+    The versioned product API at `/api/v1` carries authentication: a member
+    proves possession of a phone number with a one-time passcode and receives a
+    short-lived access token plus a rotating refresh token.
+
+    Everything else the product will eventually offer — routes, seat requests,
+    trips, reviews, safety — is deliberately absent. This document describes
+    what the service serves, not what it intends to.
 
 servers:
   - url: http://localhost:8000
@@ -45,6 +49,13 @@ servers:
 tags:
   - name: Operations
     description: Liveness and readiness probes. Not part of the versioned product API.
+  - name: Authentication
+    description: |
+      Proving possession of a phone number, and exchanging that proof for
+      credentials. There is no password anywhere in RideMate, so there is
+      nothing to hash, leak or reset.
+  - name: Account
+    description: The signed-in member's own record. Never another member's.
 
 paths:
   /health:
@@ -103,7 +114,290 @@ paths:
               schema:
                 $ref: '#/components/schemas/Readiness'
 
+  /api/v1/auth/otp:
+    post:
+      operationId: requestPasscode
+      tags: [Authentication]
+      summary: Request a one-time passcode
+      security: []
+      description: |
+        Sends a passcode to the given number.
+
+        **The response never reveals whether an account exists.** It is `202`
+        with the same body in every case, because the alternative turns this
+        endpoint into a membership oracle: anyone could learn who uses RideMate
+        by submitting numbers and reading the difference. Nothing on the server
+        side even looks — an account is resolved only when a passcode is
+        verified, so there is no branch here that could differ.
+
+        For the same reason the body carries no challenge identifier, no expiry,
+        no resend timestamp and no hint about previous requests. A caller
+        learns only that the request was accepted for delivery.
+
+        `202` rather than `200`: delivery is handed to an SMS provider and is
+        not complete when this returns.
+
+        Rate limited per number and per address. The two limits are
+        indistinguishable in the response, so the count cannot be probed either.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OtpRequest'
+      responses:
+        '202':
+          description: Accepted for delivery. Says nothing about the number.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OtpAccepted'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/otp/verify:
+    post:
+      operationId: verifyPasscode
+      tags: [Authentication]
+      summary: Exchange a passcode for credentials
+      security: []
+      description: |
+        Verifies the passcode and returns a token pair.
+
+        **This is both registration and sign-in.** A first-time member and a
+        returning one take the same path: if no account exists for the verified
+        number, one is created. RideMate has no separate register endpoint,
+        because having one would mean the request itself announced which case
+        applied.
+
+        Every failure — no outstanding passcode, expired, already used,
+        attempts exhausted, wrong code — is the same `401`. A caller cannot
+        tell how close a guess was, or whether a passcode was ever issued.
+
+        A suspended account is `403`, and nothing is created or issued.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OtpVerifyRequest'
+      responses:
+        '200':
+          description: Verified. The session is open.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/refresh:
+    post:
+      operationId: refreshCredentials
+      tags: [Authentication]
+      summary: Exchange a refresh token for a new pair
+      security: []
+      description: |
+        Returns a new pair and invalidates the one presented.
+
+        **The refresh token travels in the body, not in `Authorization`.** It is
+        not a bearer credential for this API: it authorises exactly one action,
+        and putting it in the header invites clients to attach it to ordinary
+        requests, where it would spread through logs and proxies that were only
+        ever meant to see a short-lived token.
+
+        **Rotation is strict and single-use.** Presenting a refresh token that
+        has already been exchanged is treated as theft and revokes the whole
+        session — every access token and every refresh token issued to that
+        device. The server cannot distinguish a stolen credential from a client
+        that retried a request whose response it never received, and resolves
+        that ambiguity in favour of security. Clients must therefore ensure only
+        one refresh is in flight at a time.
+
+        Unknown token, wrong secret, expired token, already-rotated token and
+        revoked session are **all the same `401`**. The distinction exists in
+        the server's records and never in the response, because publishing it
+        would tell an attacker holding a stolen credential exactly what happened
+        to it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Rotated. The previous pair is now invalid.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/auth/logout:
+    post:
+      operationId: signOut
+      tags: [Authentication]
+      summary: End this session
+      security:
+        - bearerAuth: []
+      description: |
+        Revokes the session behind the presented access token.
+
+        Takes effect immediately for **both** credentials: the access token
+        stops working before its own expiry, and the refresh token can no
+        longer be exchanged. Other devices are untouched — each has its own
+        session.
+
+        Idempotent. Signing out of a session that has already ended is still
+        `204`.
+      responses:
+        '204':
+          description: The session is over.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+
+  /api/v1/me:
+    get:
+      operationId: getMe
+      tags: [Account]
+      summary: The signed-in member's account
+      security:
+        - bearerAuth: []
+      description: |
+        Returns the caller's own account and nothing else.
+
+        Deliberately narrow. There is no profile, no verification state, no
+        Trust Score, no session list and no device list — not because they are
+        omitted for brevity, but because RideMate does not have them yet, and a
+        contract that described them would be describing an intention.
+
+        The response is an object wrapping `account` rather than the account
+        itself, so those concepts can be added later without breaking a client.
+      responses:
+        '200':
+          description: The caller's account.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        The access token from `POST /api/v1/auth/otp/verify` or
+        `POST /api/v1/auth/refresh`, sent as `Authorization: Bearer <token>`.
+
+        Opaque. It is a lookup key, not a container: clients must not parse it,
+        split it, or infer anything from its shape, and none of its structure
+        is contract. Short-lived by design — when it expires, exchange the
+        refresh token rather than asking the member to sign in again.
+
+        **The refresh token is not a bearer credential** and must never be sent
+        in this header. It goes in the body of the refresh request only. See
+        that operation for why.
+
+  responses:
+    Unauthenticated:
+      description: |
+        The credential is missing, malformed, unknown, expired, already used, or
+        belongs to a session that has ended.
+
+        Which of those it was is deliberately not stated. A caller holding a
+        credential that stopped working learns only that it stopped working.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: |
+        The credential is genuine and the account may not act.
+
+        Distinct from `401` on purpose: a client must be able to tell "sign in
+        again" from "your account is suspended", because retrying the first
+        advice forever is the only thing a member could otherwise do.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ValidationFailed:
+      description: The request body is not usable. Field detail is in `details`.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: |
+        Too many attempts. Applies per number and per address; the response does
+        not say which, so neither count can be probed.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: |
+        Something failed on the server. For passcode requests this includes a
+        delivery failure: the passcode was recorded but could not be handed to
+        a provider, so a retry is subject to the usual cooldown.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
   headers:
     RequestId:
       description: |
@@ -219,3 +513,187 @@ components:
         - validation_failed
         - rate_limited
         - internal_error
+
+    OtpRequest:
+      type: object
+      additionalProperties: false
+      required: [phone]
+      properties:
+        phone:
+          type: string
+          minLength: 4
+          maxLength: 32
+          description: |
+            The number as the member would write it. `0532 123 45 67`,
+            `+90 532 123 45 67` and `905321234567` are the same person and are
+            normalized to one canonical E.164 identity server-side.
+
+            A number in full international form is honoured whatever its
+            country; the Türkiye default applies only when no country code is
+            given.
+          examples:
+            - '0532 123 45 67'
+
+    OtpAccepted:
+      type: object
+      additionalProperties: false
+      required: [status]
+      description: |
+        The entire body. It is this small on purpose: anything varying by
+        number — a challenge id, an expiry, a resend time — would leak what the
+        `202` exists to hide.
+      properties:
+        status:
+          type: string
+          const: accepted
+
+    OtpVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [phone, code]
+      properties:
+        phone:
+          type: string
+          minLength: 4
+          maxLength: 32
+          description: The same number the passcode was requested for.
+          examples:
+            - '0532 123 45 67'
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+          description: |
+            The passcode from the message.
+
+            The example is a fixed placeholder and is not a value this service
+            would ever issue by preference.
+          examples:
+            - '000000'
+        device_name:
+          type: string
+          maxLength: 64
+          description: |
+            Shown back to the member when they review their sessions, and to
+            nobody else. Client-supplied and never trusted: nothing authorises
+            on it.
+          examples:
+            - 'Pixel 8'
+        platform:
+          type: string
+          maxLength: 32
+          description: Display metadata only. Not trusted, not authorised on.
+          examples:
+            - 'android'
+        app_version:
+          type: string
+          maxLength: 32
+          description: Display metadata only. Not trusted, not authorised on.
+          examples:
+            - '1.0.0'
+
+    RefreshRequest:
+      type: object
+      additionalProperties: false
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          description: The refresh token from the most recent pair.
+          examples:
+            - 'rmr_00000000-0000-7000-8000-000000000000.EXAMPLE-REFRESH-TOKEN-NOT-A-REAL-CREDENTIAL'
+
+    TokenPair:
+      type: object
+      additionalProperties: false
+      required: [access_token, refresh_token, token_type, expires_in, session_id]
+      description: |
+        What every successful authentication returns, whether it came from a
+        passcode or from a rotation.
+
+        It carries no token identifier, no generation number and nothing else
+        about how credentials are stored. Those are the server's bookkeeping;
+        publishing them would make an implementation detail into a promise, and
+        would hand an attacker a map of the token chain.
+      properties:
+        access_token:
+          type: string
+          description: |
+            Send as `Authorization: Bearer <token>`. Opaque — do not parse.
+          examples:
+            - 'rma_00000000-0000-7000-8000-000000000000.EXAMPLE-ACCESS-TOKEN-NOT-A-REAL-CREDENTIAL'
+        refresh_token:
+          type: string
+          description: |
+            Single use. Exchanging it returns a new pair and invalidates this
+            one; presenting it twice ends the session. Store it where the
+            platform keeps secrets, never beside ordinary preferences.
+          examples:
+            - 'rmr_00000000-0000-7000-8000-000000000000.EXAMPLE-REFRESH-TOKEN-NOT-A-REAL-CREDENTIAL'
+        token_type:
+          type: string
+          const: Bearer
+        expires_in:
+          type: integer
+          minimum: 1
+          description: |
+            Seconds until the ACCESS token expires. Says nothing about the
+            refresh token or the session, both of which outlive it.
+          examples:
+            - 900
+        session_id:
+          type: string
+          format: uuid
+          description: |
+            Identifies this device's session, so a member can be told which one
+            ended. Not a credential and not accepted as one.
+          examples:
+            - '00000000-0000-7000-8000-000000000001'
+
+    Me:
+      type: object
+      additionalProperties: false
+      required: [account]
+      properties:
+        account:
+          $ref: '#/components/schemas/Account'
+
+    Account:
+      type: object
+      additionalProperties: false
+      required: [id, phone_e164, phone_verified_at, status, created_at]
+      description: |
+        Credential identity, not a profile. Nothing here is shown to another
+        member, and `phone_e164` in particular never appears in any response
+        other than the owner's own.
+      properties:
+        id:
+          type: string
+          format: uuid
+          examples:
+            - '00000000-0000-7000-8000-000000000002'
+        phone_e164:
+          type: string
+          description: Canonical E.164, which is the only form stored.
+          examples:
+            - '+905321234567'
+        phone_verified_at:
+          type: string
+          format: date-time
+          description: |
+            When possession of this number was proven. Kept separate from
+            `created_at`, which they coincide with today but would not once a
+            number can be changed.
+        status:
+          $ref: '#/components/schemas/AccountStatus'
+        created_at:
+          type: string
+          format: date-time
+
+    AccountStatus:
+      type: string
+      enum: [active, suspended]
+      description: |
+        Two states, because two have behaviour. `suspended` is refused at
+        passcode verification, at refresh and at every authenticated request.
+        Deletion and deactivation are not modelled until something produces and
+        consumes them.
