@@ -5,9 +5,11 @@
          colors="true"
 >
     <testsuites>
-        <testsuite name="Unit">
-            <directory>tests/Unit</directory>
-        </testsuite>
+        <!-- There is no Unit suite. Phase 8 has no unit tests, and a suite
+             declaration whose directory contains none is scaffolding: git
+             cannot track an empty directory, so the declaration survived
+             locally on a leftover folder and failed on every clean checkout.
+             It returns with the first unit test that needs it. -->
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
         </testsuite>
