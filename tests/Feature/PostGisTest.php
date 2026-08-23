@@ -9,10 +9,15 @@ use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
- * The database can do geography, and the schema is still empty.
+ * The database can do geography.
  *
  * RefreshDatabase migrates from nothing before this class runs, so the suite
  * passing at all is the proof that migrations work from an empty database.
+ *
+ * The schema's SHAPE is no longer asserted here. Phase 8's "there are no
+ * product tables" guard became false the moment accounts existed, and rather
+ * than delete it the allowlist it implied moved to SchemaAllowlistTest, which
+ * keeps its actual purpose: no table appears without a decision.
  */
 final class PostGisTest extends TestCase
 {
@@ -72,34 +77,6 @@ final class PostGisTest extends TestCase
             (int) $rows,
             'spatial_ref_sys was emptied: PostGIS is registered but not usable',
         );
-    }
-
-    /**
-     * Phase 8 ends with no product domain, and this is how that stays true.
-     */
-    public function test_the_schema_contains_no_product_table(): void
-    {
-        /** @var list<string> $tables */
-        $tables = DB::table('pg_tables')
-            ->where('schemaname', 'public')
-            ->orderBy('tablename')
-            ->pluck('tablename')
-            ->all();
-
-        // migrations is Laravel's own ledger; spatial_ref_sys belongs to
-        // PostGIS. Neither is RideMate domain state.
-        self::assertSame(['migrations', 'spatial_ref_sys'], $tables);
-
-        foreach ([
-            'users', 'accounts', 'profiles', 'verifications', 'sessions',
-            'refresh_tokens', 'personal_access_tokens', 'devices', 'vehicles',
-            'routes', 'route_occurrences', 'seat_requests', 'trips',
-            'conversations', 'messages', 'reviews', 'trusted_contacts',
-            'safety_incidents', 'blocks', 'reports', 'notifications',
-            'audit_events', 'idempotency_records', 'cache', 'jobs', 'failed_jobs',
-        ] as $forbidden) {
-            self::assertNotContains($forbidden, $tables);
-        }
     }
 
     /**
