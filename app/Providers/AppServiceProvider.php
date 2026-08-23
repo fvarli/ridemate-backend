@@ -7,8 +7,12 @@ namespace App\Providers;
 use App\Otp\Sms\LocalEchoSmsSender;
 use App\Otp\Sms\NullSmsSender;
 use App\Otp\Sms\SmsSender;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
+use RuntimeException;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -47,6 +51,45 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        $this->defineRateLimiters();
+    }
+
+    /**
+     * The coarse per-IP limits, named so routes can reference them.
+     *
+     * Defined here rather than inline on a route so the budgets sit beside
+     * each other and come from configuration. The routes that use them arrive
+     * with the contract; the definitions are exercised directly by tests until
+     * then.
+     *
+     * A request with no resolvable IP buckets into one shared buffer rather
+     * than escaping the limit entirely. That is deliberately the pessimistic
+     * choice: sharing a limit is an inconvenience, having none is a hole.
+     */
+    private function defineRateLimiters(): void
+    {
+        $limits = [
+            'rm-otp-request' => 'otp_request_per_ip_per_hour',
+            'rm-otp-verify' => 'otp_verify_per_ip_per_hour',
+            'rm-auth-refresh' => 'refresh_per_ip_per_hour',
+        ];
+
+        foreach ($limits as $name => $key) {
+            $budget = $this->budget($key);
+
+            RateLimiter::for($name, static fn (Request $request): Limit => Limit::perHour($budget)
+                ->by($request->ip() ?? 'unknown'));
+        }
+    }
+
+    private function budget(string $key): int
+    {
+        $value = config("ridemate.rate_limits.$key");
+
+        if (! is_numeric($value) || (int) $value < 1) {
+            throw new RuntimeException("ridemate.rate_limits.$key is not a usable limit.");
+        }
+
+        return (int) $value;
     }
 }

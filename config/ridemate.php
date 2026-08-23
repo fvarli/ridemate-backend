@@ -75,6 +75,34 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Per-IP rate limits
+    |--------------------------------------------------------------------------
+    |
+    | These are the COARSE limits, and they are the only ones that live in a
+    | cache. The limits that actually protect a member — one live challenge per
+    | number, a sixty-second resend cooldown, five verification attempts — are
+    | counted from otp_challenges rows instead, because those need to be exact
+    | and to survive a restart.
+    |
+    | An IP address is a poor identity: it is shared by everyone behind one
+    | mobile carrier NAT and changed at will by anyone who cares. So these are
+    | set generously. They exist to blunt a crude flood, not to be the security
+    | boundary, and treating them as the boundary is how a per-IP limit ends up
+    | locking out an entire city block.
+    |
+    | Never persisted: the throttle key is derived at request time and lives
+    | only in the cache row, which expires on its own.
+    |
+    */
+
+    'rate_limits' => [
+        'otp_request_per_ip_per_hour' => (int) env('RIDEMATE_LIMIT_OTP_REQUEST', 20),
+        'otp_verify_per_ip_per_hour' => (int) env('RIDEMATE_LIMIT_OTP_VERIFY', 10),
+        'refresh_per_ip_per_hour' => (int) env('RIDEMATE_LIMIT_REFRESH', 30),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Passcode delivery
     |--------------------------------------------------------------------------
     |

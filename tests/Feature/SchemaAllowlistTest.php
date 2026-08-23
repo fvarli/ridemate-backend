@@ -42,6 +42,8 @@ final class SchemaAllowlistTest extends TestCase
         'accounts',
         'auth_sessions',
         'auth_tokens',
+        'cache',
+        'cache_locks',
         'migrations',
         'otp_challenges',
         'spatial_ref_sys',
@@ -88,6 +90,8 @@ final class SchemaAllowlistTest extends TestCase
             'safety_incidents', 'blocks', 'reports', 'notifications',
             // Deferred: nothing is queued, so nothing needs a queue table.
             'jobs', 'failed_jobs',
+            // Deferred: no web session exists, and SESSION_DRIVER stays file.
+            'sessions',
         ] as $deferred) {
             self::assertFalse(
                 Schema::hasTable($deferred),
