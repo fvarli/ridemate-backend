@@ -22,8 +22,8 @@ use Tests\TestCase;
  * says the service obeys it. Drift becomes a failing build rather than
  * something a client discovers.
  *
- * GET /api/v1/me is documented and not yet served — it arrives in the next
- * commit — so it has no entry here.
+ * All five documented paths are now served, so every one of them has entries
+ * here.
  */
 final class AuthOperationTest extends TestCase
 {
@@ -195,9 +195,42 @@ final class AuthOperationTest extends TestCase
         $this->assertMatchesOperation($response, '/api/v1/auth/logout', 'post');
     }
 
+    // ------------------------------------------------------------------- me
+
+    public function test_the_account_response_matches_the_contract(): void
+    {
+        $pair = $this->signIn(self::PHONE);
+
+        $response = $this->getJson('/api/v1/me', $this->bearer($pair['access_token']));
+
+        $response->assertStatus(200);
+        $this->assertMatchesOperation($response, '/api/v1/me', 'get');
+    }
+
+    public function test_an_unauthenticated_account_read_matches_the_contract(): void
+    {
+        $response = $this->getJson('/api/v1/me');
+
+        $response->assertStatus(401);
+        $this->assertMatchesOperation($response, '/api/v1/me', 'get');
+    }
+
+    public function test_a_suspended_account_read_matches_the_contract(): void
+    {
+        $account = $this->createAccount(self::PHONE);
+        $pair = $this->signIn(self::PHONE);
+
+        $account->status = AccountStatus::Suspended;
+        $account->save();
+
+        $response = $this->getJson('/api/v1/me', $this->bearer($pair['access_token']));
+
+        $response->assertStatus(403);
+        $this->assertMatchesOperation($response, '/api/v1/me', 'get');
+    }
+
     /**
-     * The documented surface and the served surface agree — with exactly one
-     * intentional gap, which the next commit closes.
+     * The documented surface and the served surface now agree exactly.
      */
     public function test_every_served_auth_route_is_documented(): void
     {
@@ -217,14 +250,23 @@ final class AuthOperationTest extends TestCase
             '/api/v1/auth/otp',
             '/api/v1/auth/otp/verify',
             '/api/v1/auth/refresh',
+            '/api/v1/me',
         ], $served);
 
+        // Nothing served is undocumented...
         foreach ($served as $path) {
             self::assertArrayHasKey($path, $paths, "$path is served but not documented");
         }
 
-        // Documented and deliberately not served yet.
-        self::assertArrayHasKey('/api/v1/me', $paths);
-        self::assertNotContains('/api/v1/me', $served);
+        // ...and nothing under /api/v1 is documented without being served.
+        // The gap this closes was deliberate and is now gone: from here on, a
+        // documented-but-missing endpoint is a defect rather than a plan.
+        $documented = array_values(array_filter(
+            array_keys($paths),
+            static fn (string $path): bool => str_starts_with($path, '/api/v1/'),
+        ));
+        sort($documented);
+
+        self::assertSame($documented, $served, 'the documented and served surfaces have diverged');
     }
 }

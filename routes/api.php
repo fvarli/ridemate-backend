@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\V1\Auth\LogoutController;
 use App\Http\Controllers\Api\V1\Auth\RefreshController;
 use App\Http\Controllers\Api\V1\Auth\RequestPasscodeController;
 use App\Http\Controllers\Api\V1\Auth\VerifyPasscodeController;
+use App\Http\Controllers\Api\V1\MeController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -45,3 +46,14 @@ Route::post('auth/refresh', RefreshController::class)
 Route::post('auth/logout', LogoutController::class)
     ->middleware('auth.token')
     ->name('auth.logout');
+
+/*
+ * The signed-in member's own account.
+ *
+ * Not throttled. The credential-issuing endpoints carry per-address budgets
+ * because they are what an attacker would hammer without one; a read of your
+ * own account requires a credential you already had to obtain through those.
+ */
+Route::get('me', MeController::class)
+    ->middleware('auth.token')
+    ->name('me');
