@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Http\Middleware\AssignRequestId;
+use App\Http\Middleware\AuthenticateToken;
 use App\Http\Middleware\LogRequest;
 use App\Support\ExceptionRenderer;
 use Illuminate\Foundation\Application;
@@ -27,6 +28,11 @@ return Application::configure(basePath: dirname(__DIR__))
         // Prepended so a correlation id exists before anything can fail.
         $middleware->prepend(AssignRequestId::class);
         $middleware->append(LogRequest::class);
+
+        // Named rather than global: most of the API is authenticated, but the
+        // passcode endpoints cannot be, and a global guard with exceptions
+        // fails open when someone forgets to add one.
+        $middleware->alias(['auth.token' => AuthenticateToken::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Every client of this service speaks JSON. There is no web UI, so a

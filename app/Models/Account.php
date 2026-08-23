@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace App\Models;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * A credential identity: a verified phone number, and whether it may sign in.
@@ -24,6 +26,7 @@ use Illuminate\Database\Eloquent\Model;
  * @property AccountStatus $status
  * @property CarbonImmutable $created_at
  * @property CarbonImmutable $updated_at
+ * @property-read Collection<int, AuthSession> $authSessions
  */
 class Account extends Model
 {
@@ -41,6 +44,12 @@ class Account extends Model
      * @var list<string>
      */
     protected $fillable = [];
+
+    /** @return HasMany<AuthSession, $this> */
+    public function authSessions(): HasMany
+    {
+        return $this->hasMany(AuthSession::class);
+    }
 
     /** Whether this account may authenticate at all. */
     public function isActive(): bool

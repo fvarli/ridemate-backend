@@ -40,6 +40,8 @@ final class SchemaAllowlistTest extends TestCase
      */
     private const ALLOWED = [
         'accounts',
+        'auth_sessions',
+        'auth_tokens',
         'migrations',
         'spatial_ref_sys',
     ];

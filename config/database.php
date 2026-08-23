@@ -96,6 +96,28 @@ return [
             'prefix' => '',
             'prefix_indexes' => true,
             'search_path' => 'public',
+
+            /*
+             * Pinned to UTC, and this is a correctness fix rather than tidiness.
+             *
+             * Eloquent writes datetimes as naive strings ("2026-08-23 14:45:00")
+             * with no offset. PostgreSQL resolves a naive string against the
+             * SESSION's time zone, which defaults to the server's — Europe
+             * /Istanbul on this machine. So a value Laravel meant as 14:45 UTC
+             * was being stored as 14:45+03, i.e. 11:45 UTC, and read back three
+             * hours in the past.
+             *
+             * Nothing complains. It surfaced as access tokens that were already
+             * expired the moment they were issued, and the same skew silently
+             * applies to every timestamptz column in the schema. In the other
+             * direction — a server behind UTC — credentials would have outlived
+             * their configured lifetime instead, which is the worse failure.
+             *
+             * Not env-driven on purpose: the connector interpolates this value
+             * straight into a SET TIME ZONE statement, and it must agree with
+             * config('app.timezone') rather than with whoever edited a .env.
+             */
+            'timezone' => 'UTC',
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 

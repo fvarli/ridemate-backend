@@ -4,14 +4,13 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use App\Models\Account;
 use App\Models\AccountStatus;
 use App\Support\PhoneNumber;
-use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Tests\Support\CreatesAccounts;
 use Tests\TestCase;
 
 /**
@@ -24,21 +23,12 @@ use Tests\TestCase;
  */
 final class AccountTest extends TestCase
 {
+    use CreatesAccounts;
     use RefreshDatabase;
-
-    private function makeAccount(string $phone = '+905321234567'): Account
-    {
-        $account = new Account;
-        $account->phone_e164 = $phone;
-        $account->phone_verified_at = CarbonImmutable::now();
-        $account->save();
-
-        return $account;
-    }
 
     public function test_an_account_is_created_active(): void
     {
-        $account = $this->makeAccount()->refresh();
+        $account = $this->createAccount()->refresh();
 
         self::assertSame(AccountStatus::Active, $account->status);
         self::assertTrue($account->isActive());
@@ -52,10 +42,10 @@ final class AccountTest extends TestCase
      */
     public function test_the_same_phone_number_cannot_be_registered_twice(): void
     {
-        $this->makeAccount('+905321234567');
+        $this->createAccount('+905321234567');
 
         $this->expectException(QueryException::class);
-        $this->makeAccount('+905321234567');
+        $this->createAccount('+905321234567');
     }
 
     /**
@@ -67,7 +57,7 @@ final class AccountTest extends TestCase
      */
     public function test_the_database_refuses_a_status_outside_the_enum(): void
     {
-        $this->makeAccount();
+        $this->createAccount();
 
         $this->expectException(QueryException::class);
         DB::table('accounts')->update(['status' => 'deleted']);
@@ -83,8 +73,8 @@ final class AccountTest extends TestCase
      */
     public function test_identifiers_are_time_ordered_uuid_v7(): void
     {
-        $first = $this->makeAccount('+905321234567');
-        $second = $this->makeAccount('+905329876543');
+        $first = $this->createAccount('+905321234567');
+        $second = $this->createAccount('+905329876543');
 
         self::assertTrue(Str::isUuid($first->id));
         self::assertSame(7, (int) $first->id[14], 'the version nibble should be 7');
@@ -116,10 +106,10 @@ final class AccountTest extends TestCase
         self::assertNotNull($first);
         self::assertNotNull($second);
 
-        $this->makeAccount($first);
+        $this->createAccount($first);
 
         $this->expectException(QueryException::class);
-        $this->makeAccount($second);
+        $this->createAccount($second);
     }
 
     /**
@@ -127,7 +117,7 @@ final class AccountTest extends TestCase
      */
     public function test_an_account_can_be_suspended(): void
     {
-        $account = $this->makeAccount();
+        $account = $this->createAccount();
         $account->status = AccountStatus::Suspended;
         $account->save();
 
