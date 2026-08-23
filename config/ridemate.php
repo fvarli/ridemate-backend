@@ -75,6 +75,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Passcode delivery
+    |--------------------------------------------------------------------------
+    |
+    | `null` is the default ON PURPOSE, and it throws. RideMate has not selected
+    | a production SMS provider, and the alternative default — a sender that
+    | discards quietly — produces a deployment where sign-in appears to work,
+    | no member receives anything, and nothing is logged because as far as the
+    | code is concerned nothing failed.
+    |
+    | `local_echo` is for development and refuses to construct outside the
+    | local environment. Tests bind their own in-memory double and never touch
+    | either of these.
+    |
+    | Production sign-in is not operational until an SMS adapter is configured.
+    |
+    */
+
+    'sms' => [
+        'driver' => env('RIDEMATE_SMS_DRIVER', 'null'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Phone numbers
     |--------------------------------------------------------------------------
     |

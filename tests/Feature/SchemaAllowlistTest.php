@@ -43,6 +43,7 @@ final class SchemaAllowlistTest extends TestCase
         'auth_sessions',
         'auth_tokens',
         'migrations',
+        'otp_challenges',
         'spatial_ref_sys',
     ];
 
