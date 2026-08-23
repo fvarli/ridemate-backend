@@ -1,0 +1,102 @@
+# ─────────────────────────────────────────────────────────────
+# RideMate backend — continuous integration.
+#
+# Runs the repository's own gate, tool/check.sh, rather than restating its
+# steps. That script stays the single definition of "green" for local work and
+# for CI, so the two cannot drift apart. It already includes the OpenAPI
+# contract tests and the forbidden-vocabulary guard, because both live inside
+# the PHPUnit suite.
+#
+# ON THE POSTGIS SERVICE CONTAINER
+#
+# RideMate's local development is deliberately native — no Dockerfile, no
+# compose file, no local Docker requirement. That decision is about the
+# development and repository runtime setup, not about CI. A service container
+# here is isolated infrastructure the runner throws away, and it is the only
+# way to get a pinned PostgreSQL + PostGIS pair on a hosted runner. It changes
+# nothing about how the project is run locally.
+#
+# Deliberately absent: deployment, release artifacts, secrets of any kind.
+# ─────────────────────────────────────────────────────────────
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: pint, phpstan, phpunit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        # Matches local development: PostgreSQL 16 with PostGIS 3.
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: postgres
+          # CI-only, throwaway, and never a real credential. The production
+          # database password is not, and must never be, available to CI.
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ridemate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo, pdo_pgsql, pgsql, mbstring, intl, bcmath, dom, zip
+          coverage: none
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ runner.os }}-php8.4-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-php8.4-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Prepare the environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      # tool/check.sh requires php8.4 explicitly, because the local machine's
+      # default PHP is 8.2. The runner's `php` is already 8.4, so point the
+      # script at it rather than installing a second alias.
+      - name: Quality gates
+        env:
+          RIDEMATE_PHP: php
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: ridemate_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+        run: bash tool/check.sh
+
+      # NOTE ON MIGRATING FROM EMPTY
+      #
+      # There is deliberately no extra step for this. The service container
+      # creates ridemate_test fresh on every run, so the suite's first
+      # RefreshDatabase already migrates a database that has never seen a
+      # migration. A separate step would need postgresql-client on the runner
+      # to prove something the run above has just proved.
