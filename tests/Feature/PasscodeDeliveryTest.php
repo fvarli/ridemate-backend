@@ -14,6 +14,7 @@ use App\Otp\Sms\SmsDeliveryFailed;
 use App\Otp\Sms\SmsSender;
 use Illuminate\Foundation\Testing\DatabaseTruncation;
 use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Env;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use RuntimeException;
@@ -241,9 +242,41 @@ final class PasscodeDeliveryTest extends TestCase
         (new NullSmsSender)->sendPasscode(self::PHONE, '123456');
     }
 
+    /**
+     * The DEFAULT refuses — not whatever this machine happens to configure.
+     *
+     * Asserting config('ridemate.sms.driver') directly asserted the ambient
+     * environment. .env.example deliberately sets local_echo so local
+     * development can read a passcode without an SMS vendor, and CI copies that
+     * file, so the assertion failed there while passing on a developer machine
+     * whose .env happened to leave the variable unset.
+     *
+     * The property worth pinning survives both: a deployment that configures
+     * nothing gets the sender that refuses, never one that discards. So the
+     * config is re-evaluated with the variable absent.
+     */
     public function test_the_configured_driver_defaults_to_the_refusing_sender(): void
     {
-        self::assertSame('null', config('ridemate.sms.driver'));
+        $repository = Env::getRepository();
+        $configured = $repository->get('RIDEMATE_SMS_DRIVER');
+
+        // The repository is immutable, which refuses to clear a variable that
+        // was defined outside the env file. Saying so beats asserting the
+        // default while quietly observing something else.
+        self::assertTrue(
+            $repository->clear('RIDEMATE_SMS_DRIVER'),
+            'the driver is defined outside the env file, so the default cannot be observed',
+        );
+
+        try {
+            $config = require config_path('ridemate.php');
+        } finally {
+            if ($configured !== null) {
+                $repository->set('RIDEMATE_SMS_DRIVER', $configured);
+            }
+        }
+
+        self::assertSame('null', $config['sms']['driver']);
     }
 
     /**
