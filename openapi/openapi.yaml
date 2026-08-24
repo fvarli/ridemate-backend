@@ -684,7 +684,7 @@ components:
       properties:
         status:
           type: string
-          const: ok
+          enum: [ok]
         service:
           type: string
           description: The application name.
@@ -810,7 +810,7 @@ components:
       properties:
         status:
           type: string
-          const: accepted
+          enum: [accepted]
 
     OtpVerifyRequest:
       type: object
@@ -896,7 +896,7 @@ components:
             - 'rmr_00000000-0000-7000-8000-000000000000.EXAMPLE-REFRESH-TOKEN-NOT-A-REAL-CREDENTIAL'
         token_type:
           type: string
-          const: Bearer
+          enum: [Bearer]
         expires_in:
           type: integer
           minimum: 1
