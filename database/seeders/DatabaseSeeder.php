@@ -7,15 +7,22 @@ namespace Database\Seeders;
 use Illuminate\Database\Seeder;
 
 /**
- * Phase 8 seeds nothing.
+ * Reference data only.
  *
- * There is no product domain yet, and seeding a placeholder record would create
- * exactly the speculative state this phase exists to avoid.
+ * The pilot place catalogue is not sample content: routes will reference it by
+ * foreign key, so an environment without it cannot publish a journey at all.
+ * That is why it is seeded rather than left to a fixture, and why it belongs in
+ * every environment rather than development alone.
+ *
+ * Nothing else is seeded. There are no demo accounts and no example routes: a
+ * placeholder member is indistinguishable from a real one once it is in the
+ * database, and RideMate has spent every phase so far keeping fabricated people
+ * out of surfaces that look real.
  */
 class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        //
+        $this->call(PilotPlaceSeeder::class);
     }
 }

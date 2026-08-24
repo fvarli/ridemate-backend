@@ -46,6 +46,7 @@ final class SchemaAllowlistTest extends TestCase
         'cache_locks',
         'migrations',
         'otp_challenges',
+        'places',
         'spatial_ref_sys',
     ];
 

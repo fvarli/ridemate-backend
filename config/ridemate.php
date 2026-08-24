@@ -143,4 +143,30 @@ return [
         'default_region' => env('RIDEMATE_PHONE_REGION', 'TR'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | The pilot
+    |--------------------------------------------------------------------------
+    |
+    | RideMate's first deployment is one invite-only city, and one thing about
+    | it is load-bearing rather than cosmetic: the timezone a published journey
+    | is read in.
+    |
+    | A route carries a wall-clock departure — 08:00 — not an instant, because a
+    | weekday-recurring journey has no single instant to store. Deciding whether
+    | such a departure is still in the future needs a zone, and taking that zone
+    | from the request would let a client move its own deadline. So it is
+    | resolved here, once, and every route records the name it was published
+    | under, so a second city cannot silently reinterpret the first one's rows.
+    |
+    | An IANA name rather than a fixed offset: Türkiye does not observe DST
+    | today, and a name stays correct if that ever changes, where '+03:00' would
+    | quietly begin to lie.
+    |
+    */
+
+    'pilot' => [
+        'timezone' => env('RIDEMATE_PILOT_TIMEZONE', 'Europe/Istanbul'),
+    ],
+
 ];
