@@ -7,6 +7,8 @@ use App\Http\Controllers\Api\V1\Auth\RefreshController;
 use App\Http\Controllers\Api\V1\Auth\RequestPasscodeController;
 use App\Http\Controllers\Api\V1\Auth\VerifyPasscodeController;
 use App\Http\Controllers\Api\V1\MeController;
+use App\Http\Controllers\Api\V1\Routes\ListPlacesController;
+use App\Http\Controllers\Api\V1\Routes\PublishRouteController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -57,3 +59,19 @@ Route::post('auth/logout', LogoutController::class)
 Route::get('me', MeController::class)
     ->middleware('auth.token')
     ->name('me');
+
+/*
+ * Publishing a journey, and the places one may run between.
+ *
+ * Not throttled, for the same reason /me is not: the per-address budgets guard
+ * the endpoints that hand out credentials, and both of these already require
+ * one. Publication is also idempotent on an id the client chose, so a retry
+ * storm produces one route rather than a queue of them.
+ */
+Route::get('places', ListPlacesController::class)
+    ->middleware('auth.token')
+    ->name('places.index');
+
+Route::post('routes', PublishRouteController::class)
+    ->middleware('auth.token')
+    ->name('routes.publish');

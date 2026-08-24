@@ -251,6 +251,8 @@ final class AuthOperationTest extends TestCase
             '/api/v1/auth/otp/verify',
             '/api/v1/auth/refresh',
             '/api/v1/me',
+            '/api/v1/places',
+            '/api/v1/routes',
         ], $served);
 
         // Nothing served is undocumented...
@@ -270,8 +272,6 @@ final class AuthOperationTest extends TestCase
         // promise nobody kept.
         $awaitingImplementation = [
             '/api/v1/me/routes',
-            '/api/v1/places',
-            '/api/v1/routes',
             '/api/v1/routes/{routeId}/cancel',
         ];
 
