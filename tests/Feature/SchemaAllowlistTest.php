@@ -47,6 +47,7 @@ final class SchemaAllowlistTest extends TestCase
         'migrations',
         'otp_challenges',
         'places',
+        'routes',
         'spatial_ref_sys',
     ];
 
@@ -86,7 +87,7 @@ final class SchemaAllowlistTest extends TestCase
             // their own timestamps.
             'audit_events', 'idempotency_records',
             // Product domain, later phases.
-            'vehicles', 'routes', 'route_occurrences', 'seat_requests', 'trips',
+            'vehicles', 'route_occurrences', 'seat_requests', 'trips',
             'conversations', 'messages', 'reviews', 'trusted_contacts',
             'safety_incidents', 'blocks', 'reports', 'notifications',
             // Deferred: nothing is queued, so nothing needs a queue table.
