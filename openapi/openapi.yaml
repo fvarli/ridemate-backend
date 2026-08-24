@@ -56,6 +56,10 @@ tags:
       nothing to hash, leak or reset.
   - name: Account
     description: The signed-in member's own record. Never another member's.
+  - name: Routes
+    description: |
+      Publishing a journey, and the places one can run between. A route is a
+      plan a driver states, not a booking anyone has made.
 
 paths:
   /health:
@@ -318,6 +322,197 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/v1/places:
+    get:
+      operationId: listPlaces
+      tags: [Routes]
+      summary: The places a pilot journey can start or end at
+      security:
+        - bearerAuth: []
+      description: |
+        The curated catalogue a driver picks endpoints from.
+
+        Reference data, not user content: a member does not create a place.
+        RideMate publishes a small set of real meeting points — ferry terminals,
+        metro stations, a shopping centre entrance — and the coordinates behind
+        them stay on the server.
+
+        **Only `id` and `label` are returned.** The catalogue also holds
+        latitude, longitude and a spatial point, and none of them appear here.
+        They exist so a later phase can match corridors; they are not the
+        client's business, and publishing them would hand every member a
+        location dataset to answer a question the client never asks.
+
+        Deliberately not paginated. This is a bounded catalogue, not a feed —
+        it is short by design, and a cursor over five rows would be ceremony.
+        The first paginated response is `/api/v1/me/routes`.
+      responses:
+        '200':
+          description: Every place a journey may use.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaceCatalogue'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/routes:
+    post:
+      operationId: publishRoute
+      tags: [Routes]
+      summary: Publish a journey
+      security:
+        - bearerAuth: []
+      description: |
+        Publishes a journey the caller is driving.
+
+        **The client supplies the id, and that is what makes this safe to
+        retry.** It generates a UUIDv7 before sending, so a request repeated
+        over a dropped connection carries the same id and cannot become a second
+        journey. There is no `Idempotency-Key` header: the primary key already
+        answers the question one would ask.
+
+        - **201** — the journey was created by this request.
+        - **200** — this exact journey already existed under this id. The first
+          attempt landed; nothing is written again, not even a timestamp.
+        - **409** — the id is already in use for something else. The response
+          says only that. It never reveals whose it is or what it describes.
+
+        The driver is the authenticated member. There is no owner field in the
+        request, because a request that could name one could publish a journey
+        in somebody else's name.
+
+        `timezone` is absent from the request for the same class of reason. The
+        server records the pilot's zone, and a client that could choose one
+        could decide for itself whether its own departure had passed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutePublication'
+      responses:
+        '201':
+          description: The journey was published.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteEnvelope'
+        '200':
+          description: |
+            This journey was already published under this id. The body is
+            identical to the one the original request returned.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /api/v1/me/routes:
+    get:
+      operationId: listMyRoutes
+      tags: [Routes]
+      summary: The journeys the caller has published
+      security:
+        - bearerAuth: []
+      description: |
+        The caller's own routes, newest first, including cancelled ones.
+
+        Scoped to the authenticated member by the query itself; there is no
+        parameter that could widen it.
+
+        **Cursor pagination, not offset.** A member's list grows while they read
+        it, and an offset over a moving list shows some rows twice and skips
+        others — a correctness problem that is invisible when testing against
+        fixed data.
+
+        The cursor is **opaque**. It is produced by this endpoint and passed back
+        unchanged; it is not a date, an id, an index or anything a client should
+        construct, parse or reason about. What it encodes is an implementation
+        detail that must be free to change.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of the caller's routes.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /api/v1/routes/{routeId}/cancel:
+    post:
+      operationId: cancelRoute
+      tags: [Routes]
+      summary: Cancel a published journey
+      security:
+        - bearerAuth: []
+      description: |
+        Withdraws a journey the caller published.
+
+        **Naturally idempotent, and therefore has no request body.** The
+        transition names the state it wants, so running it twice is not a second
+        cancellation — it is the same one, observed again.
+
+        - **200** — cancelled, or already cancelled. The body is the same
+          either way, and a repeat does not move `cancelled_at`.
+        - **409** — the journey is a one-off whose departure has already passed.
+          Cancelling it would rewrite history rather than change a plan.
+        - **404** — the route is not the caller's. A member cannot learn that
+          somebody else's route exists by trying to cancel it.
+
+        There is no `expected_status` field. That convention is for transitions
+        with several valid starting states; this one has a single target and
+        re-running it changes nothing.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+      responses:
+        '200':
+          description: The journey is cancelled.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -374,6 +569,34 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    NotFound:
+      description: |
+        The resource does not exist, or does not exist for this caller.
+
+        Deliberately one answer for both. Telling a member that somebody else's
+        route exists — merely by refusing it differently — would leak the very
+        thing the refusal was protecting.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: |
+        The request cannot be applied to the current state.
+
+        Either an id already means something else, or a transition was asked
+        for that the resource's state does not allow. The body never describes
+        the resource that caused the conflict.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     RateLimited:
       description: |
         Too many attempts. Applies per number and per address; the response does
@@ -397,6 +620,48 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+
+  parameters:
+    RouteId:
+      name: routeId
+      in: path
+      required: true
+      description: |
+        The route's identifier, as the client generated it when publishing.
+      schema:
+        $ref: '#/components/schemas/RouteId'
+
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        A position in the caller's list, taken verbatim from a previous
+        response's `next_cursor`.
+
+        **Opaque.** It is not a date, an id, an offset or a page number, and a
+        client must never construct, parse or modify one. What it encodes is an
+        implementation detail that has to stay free to change; a client that
+        read it would be depending on the ordering of a query it cannot see.
+
+        Omit it to start at the newest route.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: |
+        How many routes to return. The server may return fewer; only an absent
+        `next_cursor` means the end has been reached.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
 
   headers:
     RequestId:
@@ -688,6 +953,326 @@ components:
         created_at:
           type: string
           format: date-time
+
+    RouteId:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+      description: |
+        A UUID **version 7**, generated by the client before it publishes.
+
+        The version is part of the contract, not a preference. v7 is
+        time-ordered, so ids append to an index instead of scattering across it,
+        and `format: uuid` alone would accept a v4 — which is why the pattern
+        pins the version nibble and the variant as well.
+
+        This id is also what makes publishing safe to retry: the same id is the
+        same journey, so a repeated request cannot create a second one.
+      examples:
+        - 01991b00-0000-7000-8000-0000000000a1
+
+    PlaceId:
+      type: string
+      format: uuid
+      description: The identifier of a place from `GET /api/v1/places`.
+      examples:
+        - 01991a00-0000-7000-8000-000000000001
+
+    Place:
+      type: object
+      additionalProperties: false
+      required: [id, label]
+      description: |
+        A place a journey can start or end at, as the client needs it.
+
+        Exactly two fields. The catalogue behind this also stores latitude,
+        longitude and a spatial point, and none of them belong on the wire: the
+        client selects places by identity and renders them by name, and it has
+        never needed to know where they are.
+      properties:
+        id:
+          $ref: '#/components/schemas/PlaceId'
+        label:
+          type: string
+          description: The name shown to the member, in Turkish.
+          examples:
+            - Kadıköy, Vapur İskelesi
+
+    PlaceCatalogue:
+      type: object
+      additionalProperties: false
+      required: [places]
+      description: |
+        The whole catalogue. An object rather than a bare array, so a later
+        phase can add something alongside it without breaking a client.
+      properties:
+        places:
+          type: array
+          items:
+            $ref: '#/components/schemas/Place'
+
+    Recurrence:
+      type: string
+      enum: [once, weekdays]
+      description: |
+        How often the journey happens.
+
+        `once` states a date. `weekdays` repeats until cancelled and has no
+        single date, which is why it must not carry one.
+
+        There is no arbitrary recurrence rule, no day picker and no end date:
+        the approved screen offers these two, and inventing more would be a
+        scheduling model no driver asked for.
+
+    RideRules:
+      type: object
+      additionalProperties: false
+      required: [no_smoking, music_ok, no_pets, quiet]
+      description: |
+        What the driver says about their own car.
+
+        Preferences stated by a person, not conditions anyone enforces and not
+        filters anything matches on. They are carried because the screen
+        collects them, and publishing a journey while discarding them would
+        leave four controls that appear to do something and do not.
+      properties:
+        no_smoking:
+          type: boolean
+        music_ok:
+          type: boolean
+        no_pets:
+          type: boolean
+          description: |
+            POLICY REVIEW OUTSTANDING. Carried as the driver's own statement.
+            Before this is ever used to filter or match, it needs product,
+            legal and safety review. Recording that here keeps the question
+            attached to the field rather than losing it.
+        quiet:
+          type: boolean
+
+    RoutePublication:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - origin_place_id
+        - destination_place_id
+        - recurrence
+        - departure_time
+        - seats_offered
+        - rules
+      description: |
+        A journey to publish.
+
+        Note what is absent. There is no owner: the driver is the authenticated
+        member, and a field naming one could publish in somebody else's name.
+        There is no timezone: the server records the pilot's, and a client that
+        chose its own could decide for itself whether its departure had passed.
+        There is no cost of any kind: RideMate shares journey costs and charges
+        nobody, and no driver chooses the figure the screen suggests.
+      properties:
+        id:
+          $ref: '#/components/schemas/RouteId'
+        origin_place_id:
+          $ref: '#/components/schemas/PlaceId'
+        destination_place_id:
+          $ref: '#/components/schemas/PlaceId'
+        recurrence:
+          $ref: '#/components/schemas/Recurrence'
+        departure_date:
+          $ref: '#/components/schemas/DepartureDate'
+        departure_time:
+          $ref: '#/components/schemas/DepartureTime'
+        seats_offered:
+          $ref: '#/components/schemas/SeatsOffered'
+        rules:
+          $ref: '#/components/schemas/RideRules'
+      oneOf:
+        - title: A one-off journey, which states its date
+          properties:
+            recurrence:
+              enum: [once]
+          required: [departure_date]
+        - title: A weekday commute, which has no single date
+          properties:
+            recurrence:
+              enum: [weekdays]
+          not:
+            required: [departure_date]
+
+    DepartureDate:
+      type: string
+      format: date
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      description: |
+        The calendar day a one-off journey happens, read in the route's
+        timezone. Present only when `recurrence` is `once`.
+
+        A real date, checked as one: `2026-02-30` is refused rather than
+        quietly read as the 2nd of March.
+      examples:
+        - '2026-09-14'
+
+    DepartureTime:
+      type: string
+      pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+      description: |
+        The wall clock the driver chose, `HH:mm`, read in the route's timezone.
+
+        **Minutes only.** Deliberately not `format: time`, which would imply
+        the RFC 3339 shape and suggest that `08:00:00` is accepted; the server
+        rejects it, and a contract that hinted otherwise would be lying to
+        whoever wrote the client.
+
+        A wall clock rather than an instant, because a weekday commute has no
+        single instant to state.
+      examples:
+        - '08:25'
+
+    SeatsOffered:
+      type: integer
+      minimum: 1
+      maximum: 32767
+      description: |
+        Free seats the driver is offering.
+
+        The minimum is the product rule: a journey with no free seat is not
+        being shared. **The maximum is a storage bound, not a policy** — it is
+        the capacity of the column, stated so that an absurd value is a clean
+        rejection rather than a server error. RideMate has no vehicle model and
+        therefore no opinion about how many seats a car has; when one exists,
+        the real limit will come from it.
+      examples:
+        - 3
+
+    DepartureState:
+      type: string
+      enum: [upcoming, past]
+      description: |
+        Whether the departure is still ahead, derived when you ask.
+
+        Never stored and never writable. A one-off journey becomes `past` by
+        the clock moving, not by anything being updated, which is why there is
+        no `expired` status and nothing sweeping for one. A recurring journey is
+        always `upcoming` while published: there is always another weekday.
+
+        The server derives it because the rule lives in the route's timezone. A
+        client recomputing it would eventually disagree about whether a journey
+        can still be cancelled.
+
+    RouteStatus:
+      type: string
+      enum: [published, cancelled]
+      description: |
+        Two states, because Phase 10 has behaviour for two. A journey that has
+        already departed is not a third state — see `departure_state`.
+
+    Route:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - origin
+        - destination
+        - recurrence
+        - departure_time
+        - timezone
+        - departure_state
+        - seats_offered
+        - rules
+        - status
+        - published_at
+      description: |
+        A published journey.
+
+        Everything here is something RideMate actually knows: where the journey
+        runs, when it leaves, how many seats are free, what the driver said
+        about their car, and whether it still stands.
+
+        Nothing here describes the driver. No name, no rating, no verification
+        badge, no trip count, no trust score, no vehicle and no cost — not
+        omitted for brevity, but absent because RideMate does not have them, and
+        a field carrying a plausible number would make the rest of a screen look
+        equally real.
+      properties:
+        id:
+          $ref: '#/components/schemas/RouteId'
+        origin:
+          $ref: '#/components/schemas/Place'
+        destination:
+          $ref: '#/components/schemas/Place'
+        recurrence:
+          $ref: '#/components/schemas/Recurrence'
+        departure_date:
+          description: |
+            The day a one-off journey happens. `null` for a weekday commute,
+            which has no single date.
+          oneOf:
+            - $ref: '#/components/schemas/DepartureDate'
+            - type: 'null'
+        departure_time:
+          $ref: '#/components/schemas/DepartureTime'
+        timezone:
+          type: string
+          description: |
+            The IANA zone the departure is read in, recorded when the journey
+            was published. Server-owned: it never appears in a request.
+          examples:
+            - Europe/Istanbul
+        departure_state:
+          $ref: '#/components/schemas/DepartureState'
+        seats_offered:
+          $ref: '#/components/schemas/SeatsOffered'
+        rules:
+          $ref: '#/components/schemas/RideRules'
+        status:
+          $ref: '#/components/schemas/RouteStatus'
+        published_at:
+          type: string
+          format: date-time
+        cancelled_at:
+          description: When the journey was withdrawn; `null` while it stands.
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+
+    RouteEnvelope:
+      type: object
+      additionalProperties: false
+      required: [route]
+      description: |
+        One route, wrapped, so something can be added beside it later without
+        breaking a client.
+      properties:
+        route:
+          $ref: '#/components/schemas/Route'
+
+    RoutePage:
+      type: object
+      additionalProperties: false
+      required: [routes, next_cursor]
+      description: |
+        A page of routes, newest first.
+      properties:
+        routes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Route'
+        next_cursor:
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 512
+            - type: 'null'
+          description: |
+            Pass this back as `cursor` to continue. **`null` means the end** —
+            an empty `routes` array does not, and a client that stopped on one
+            would sometimes stop early.
+
+            Opaque: see the `cursor` parameter.
+          examples:
+            - null
 
     AccountStatus:
       type: string

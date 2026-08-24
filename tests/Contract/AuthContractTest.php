@@ -75,9 +75,9 @@ final class AuthContractTest extends TestCase
     }
 
     /**
-     * Exactly these paths. Adding a sixth has to be a deliberate edit here.
+     * Exactly these paths. Adding a twelfth has to be a deliberate edit here.
      */
-    public function test_the_document_describes_exactly_the_phase_nine_surface(): void
+    public function test_the_document_describes_exactly_the_served_surface(): void
     {
         /** @var array<string, mixed> $paths */
         $paths = self::contractDocument()['paths'];
@@ -90,6 +90,10 @@ final class AuthContractTest extends TestCase
             '/api/v1/auth/refresh',
             '/api/v1/auth/logout',
             '/api/v1/me',
+            '/api/v1/places',
+            '/api/v1/routes',
+            '/api/v1/me/routes',
+            '/api/v1/routes/{routeId}/cancel',
         ], array_keys($paths));
     }
 
@@ -102,8 +106,12 @@ final class AuthContractTest extends TestCase
         $paths = self::contractDocument()['paths'];
         $documented = implode(' ', array_keys($paths));
 
+        // `routes` left this list in Phase 10, when route publication was
+        // specified and then served. Everything still here belongs to a phase
+        // that has not happened, and a path naming one would be describing an
+        // intention rather than a service.
         foreach ([
-            'routes', 'trips', 'seat', 'requests', 'reviews', 'messages',
+            'trips', 'seat', 'requests', 'reviews', 'messages',
             'conversations', 'vehicles', 'safety', 'notifications', 'profile',
             'verification', 'sessions', 'devices', 'register', 'login',
         ] as $absent) {
@@ -196,7 +204,8 @@ final class AuthContractTest extends TestCase
         $responses = self::contractDocument()['components']['responses'];
 
         self::assertSame([
-            'Unauthenticated', 'Forbidden', 'ValidationFailed', 'RateLimited', 'InternalError',
+            'Unauthenticated', 'Forbidden', 'ValidationFailed', 'NotFound', 'Conflict',
+            'RateLimited', 'InternalError',
         ], array_keys($responses));
 
         foreach ($responses as $name => $response) {
