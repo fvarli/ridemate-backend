@@ -49,6 +49,14 @@ final class RoutePublicationRefused extends RuntimeException
         return new self(RefusalReason::IdAlreadyUsed, 'That route id is already in use.');
     }
 
+    public static function idWasCancelled(): self
+    {
+        return new self(
+            RefusalReason::IdAlreadyUsed,
+            'That route id belongs to a cancelled journey and cannot be reused.',
+        );
+    }
+
     public static function idDescribesADifferentJourney(): self
     {
         return new self(

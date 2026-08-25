@@ -7,6 +7,8 @@ use App\Http\Controllers\Api\V1\Auth\RefreshController;
 use App\Http\Controllers\Api\V1\Auth\RequestPasscodeController;
 use App\Http\Controllers\Api\V1\Auth\VerifyPasscodeController;
 use App\Http\Controllers\Api\V1\MeController;
+use App\Http\Controllers\Api\V1\Routes\CancelRouteController;
+use App\Http\Controllers\Api\V1\Routes\ListMyRoutesController;
 use App\Http\Controllers\Api\V1\Routes\ListPlacesController;
 use App\Http\Controllers\Api\V1\Routes\PublishRouteController;
 use Illuminate\Support\Facades\Route;
@@ -75,3 +77,22 @@ Route::get('places', ListPlacesController::class)
 Route::post('routes', PublishRouteController::class)
     ->middleware('auth.token')
     ->name('routes.publish');
+
+/*
+ * A member's own journeys.
+ *
+ * The id is constrained to a UUIDv7 here rather than validated in the
+ * controller, so a malformed one never matches the route at all and becomes an
+ * ordinary 404 — which is what the contract publishes for this operation.
+ * Validating it instead would have to invent a 422 the document does not
+ * describe, and would answer differently for "not a route id" and "not your
+ * route", which is a difference worth not telling anyone.
+ */
+Route::get('me/routes', ListMyRoutesController::class)
+    ->middleware('auth.token')
+    ->name('me.routes.index');
+
+Route::post('routes/{routeId}/cancel', CancelRouteController::class)
+    ->middleware('auth.token')
+    ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->name('routes.cancel');

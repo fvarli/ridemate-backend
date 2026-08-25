@@ -251,8 +251,10 @@ final class AuthOperationTest extends TestCase
             '/api/v1/auth/otp/verify',
             '/api/v1/auth/refresh',
             '/api/v1/me',
+            '/api/v1/me/routes',
             '/api/v1/places',
             '/api/v1/routes',
+            '/api/v1/routes/{routeId}/cancel',
         ], $served);
 
         // Nothing served is undocumented...
@@ -270,10 +272,14 @@ final class AuthOperationTest extends TestCase
         // down here — the same reason SchemaAllowlistTest names its deferred
         // tables. A path nobody listed is a defect; a path listed forever is a
         // promise nobody kept.
-        $awaitingImplementation = [
-            '/api/v1/me/routes',
-            '/api/v1/routes/{routeId}/cancel',
-        ];
+        // EMPTY, and it must stay that way.
+        //
+        // Phase 10 finished the four operations it specified, so the gap
+        // between contract and controller is closed. From here a documented
+        // endpoint that nothing serves is a defect rather than a plan, and
+        // adding a name to this list is how somebody would have to admit it.
+        /** @var list<string> $awaitingImplementation */
+        $awaitingImplementation = [];
 
         $documented = array_values(array_filter(
             array_keys($paths),

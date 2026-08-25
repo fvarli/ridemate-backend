@@ -116,6 +116,20 @@ final class PublishRoute
             throw RoutePublicationRefused::idBelongsToSomeoneElse();
         }
 
+        if (! $existing->isPublished()) {
+            // A CANCELLED ID IS SPENT.
+            //
+            // Even when every field matches. The member withdrew this journey,
+            // and re-sending the request that created it must not quietly
+            // bring it back — a retry is supposed to be indistinguishable from
+            // the first attempt succeeding, and here the first attempt was
+            // succeeded by a deliberate cancellation.
+            //
+            // Nor is a replacement minted server-side: the client owns the id,
+            // so a genuinely new journey arrives with a genuinely new one.
+            throw RoutePublicationRefused::idWasCancelled();
+        }
+
         $sameJourney = $existing->origin_place_id === $origin->id
             && $existing->destination_place_id === $destination->id
             && $existing->recurrence === $departure->recurrence
