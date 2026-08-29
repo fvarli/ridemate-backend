@@ -43,7 +43,7 @@ One shape, always:
 copy. Renaming one is a breaking change.
 
 **`message` is developer-facing English and clients must never display it.** The Flutter
-client owns 210 approved localization keys with Turkish as the source language; if the
+client owns its approved localization keys with Turkish as the source language; if the
 server sent display text, message ownership would fork across two repositories with two
 release cadences and the app would eventually show strings its translators never approved.
 
@@ -79,24 +79,74 @@ pollute log lines, and an unbounded value would be a denial of service on log vo
 
 ## Pagination — cursor, never offset
 
-When pagination arrives it is cursor-based: `?cursor=…&limit=…`, with the next cursor in
-the response.
+Cursor-based: `?cursor=…&limit=…`, with `next_cursor` in the response.
 
 Offset pagination over a feed that mutates — journeys filling up, requests being accepted —
 shows duplicates and silently skips items as rows shift between pages. That is a
 correctness problem, not a performance one, and it is invisible in testing against static
 data.
 
-## Idempotency — defined now, implemented with the first command
+**Implemented in Phase 10** by `GET /api/v1/me/routes`, the first list endpoint, and the
+shape every later one follows:
 
-Every non-GET that creates or transitions an entity will require an `Idempotency-Key`
-header, unique per caller and endpoint, with the response replayed for 24 hours.
+* **`next_cursor: null` is the only end-of-list signal.** An empty `routes` array is not —
+  a page can legitimately come back empty with rows behind it, and a client that stopped
+  there would hide a member's own data from them with nothing to notice.
+* **The cursor is opaque.** It is produced by the endpoint and passed back unchanged. It is
+  not a date, an id, an offset or a page number, and a client must never construct, parse or
+  modify one — what it encodes has to stay free to change. Opaque here means *encrypted*,
+  not merely encoded: a base64 of the sort key would make the word false the moment somebody
+  looked.
+* **A cursor is a position, not a capability.** It carries no account id, and the query it
+  resumes is owner-scoped anyway, so presenting someone else's cursor grants nothing.
+* An unusable cursor — tampered, wrong version, wrong shape — is `422 validation_failed` on
+  the `cursor` field, never a `500`, and the message says only that it is not usable.
+  Describing *why* would describe the format.
+* `limit` is bounded by the contract, with a documented default, and the server may return
+  fewer than asked.
+
+## Idempotency — three mechanisms, one chosen per command
 
 Mobile retries are not hypothetical. "The passenger sent two requests for the last seat
 because the tunnel dropped" is a support incident on day one, and the fix has to exist
 before the endpoint does.
 
-**Not implemented in Phase 8**, which has no command endpoint. No storage table exists yet.
+Phase 8 answered that with a single blanket rule: every non-GET would carry an
+`Idempotency-Key`, replayed for 24 hours. Phase 10 replaced it, because writing the first
+two commands showed the rule was buying a storage table and a header to solve problems the
+commands had already solved by their own shape.
+
+**A command picks exactly one of these, by its semantics. They are alternatives, not three
+things every endpoint implements.**
+
+**1. Stable resource identity.** A create may rely on a client-generated resource UUID when
+that UUID completely identifies the intended resource. The retry carries the same id, the
+server recognises it, and no second row appears.
+
+> `POST /api/v1/routes` takes a client-generated UUIDv7 as the route's `id`. See
+> *Route publication identity* in `docs/architecture.md` for what "the same resource" means
+> there, and what a mismatch answers.
+
+**2. Naturally idempotent target-state transition.** A transition with a single target state
+may rely on that state, when repeating the command cannot produce a second mutation. There is
+nothing to replay because there is nothing that happened twice.
+
+> `POST /api/v1/routes/{routeId}/cancel` is the canonical example: no request body, no
+> `expected_status`, no key. Cancelling an already-cancelled route is the same cancellation
+> observed again.
+
+**3. Explicit `Idempotency-Key`.** For a command with several meaningful transitions or
+outcomes, where neither the resource id nor a single target state is enough to say what the
+caller meant. The header is unique per caller and endpoint, with the response replayed.
+
+> Seat-request accept/reject is the expected first case. **No such endpoint exists**, so none
+> is documented here, and `idempotency_records` is not created. Tier 3 is built by the
+> command that first needs it.
+
+Choosing tier 1 or 2 is not a shortcut past tier 3. It is the observation that a command
+whose intent is fully named by a resource id, or whose repetition is a no-op, does not need a
+second mechanism to say the same thing — and a mechanism that exists without a consumer is
+one more thing to keep correct.
 
 ## Concurrency — expected state, not locks
 
@@ -111,13 +161,22 @@ passenger withdraws is resolved without holding a lock across a mobile round tri
 losing client re-renders the new truth rather than showing an error — that is a UI state,
 not a failure.
 
-**Not implemented in Phase 8**, which has no lifecycle.
+**Not implemented in Phase 10 either, and deliberately not.** The one transition that
+exists — cancellation — has a single target state, so re-running it changes nothing and
+there is no losing client to re-render. `expected_status` earns its place at the first
+transition with several valid source states; until then it would be a field every caller
+sends and no server branch reads.
 
 ## Cost-sharing vocabulary
 
 `fare`, `price`, `pricing`, `earnings`, `income`, `payout`, `revenue`, `charge`,
-`commission` and `invoice` are forbidden as contract identifiers. The approved term is
-`cost_share_per_person`: read-only on every response, accepted as input by no endpoint.
+`commission` and `invoice` are forbidden as contract identifiers.
+
+**No cost value appears in the API at all.** No endpoint emits one, no endpoint accepts one,
+and the `Route` schema has no such property — Phase 10 decided against a column, a wire
+field, a schema property, a calculation helper and a server-side default, because nothing in
+the product produces a figure any of them could honestly carry. `cost_share_per_person` is
+the term reserved for that concept **if it ever becomes real**; today it names nothing.
 
 Enforced by `tests/Contract/VocabularyTest.php` against the spec, on identifier positions
 only so prose may still explain the rule. See `docs/architecture.md` for why this is a
