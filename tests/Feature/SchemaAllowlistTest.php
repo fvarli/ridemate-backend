@@ -47,6 +47,7 @@ final class SchemaAllowlistTest extends TestCase
         'migrations',
         'otp_challenges',
         'places',
+        'profiles',
         'routes',
         'spatial_ref_sys',
     ];
@@ -81,8 +82,9 @@ final class SchemaAllowlistTest extends TestCase
             // credentials because rotation and reuse detection had to be
             // written either way.
             'personal_access_tokens',
-            // Deferred: no capture flow exists to fill them.
-            'profiles', 'consents', 'verifications', 'devices',
+            // Deferred: no capture flow exists to fill them. `profiles` left
+            // this list in Phase 11, which built the capture flow.
+            'consents', 'verifications', 'devices',
             // Deferred: no ops surface reads them, and the auth tables carry
             // their own timestamps.
             'audit_events', 'idempotency_records',

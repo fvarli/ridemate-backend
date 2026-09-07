@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * A credential identity: a verified phone number, and whether it may sign in.
@@ -27,6 +28,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property CarbonImmutable $created_at
  * @property CarbonImmutable $updated_at
  * @property-read Collection<int, AuthSession> $authSessions
+ * @property-read Profile|null $profile
  */
 class Account extends Model
 {
@@ -49,6 +51,22 @@ class Account extends Model
     public function authSessions(): HasMany
     {
         return $this->hasMany(AuthSession::class);
+    }
+
+    /**
+     * This account's public identity, if it has one yet.
+     *
+     * hasOne rather than hasMany because `profiles.account_id` is unique — the
+     * relation states what the database already enforces. Nullable on purpose:
+     * an account exists from the moment a phone number is verified, and a
+     * profile only once the member has chosen a name. "Authenticated but not
+     * yet named" is a real state, and the client routes on it.
+     *
+     * @return HasOne<Profile, $this>
+     */
+    public function profile(): HasOne
+    {
+        return $this->hasOne(Profile::class);
     }
 
     /** Whether this account may authenticate at all. */
