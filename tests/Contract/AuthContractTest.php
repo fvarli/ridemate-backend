@@ -90,6 +90,7 @@ final class AuthContractTest extends TestCase
             '/api/v1/auth/refresh',
             '/api/v1/auth/logout',
             '/api/v1/me',
+            '/api/v1/me/profile',
             '/api/v1/places',
             '/api/v1/routes',
             '/api/v1/me/routes',
@@ -107,12 +108,18 @@ final class AuthContractTest extends TestCase
         $documented = implode(' ', array_keys($paths));
 
         // `routes` left this list in Phase 10, when route publication was
-        // specified and then served. Everything still here belongs to a phase
-        // that has not happened, and a path naming one would be describing an
-        // intention rather than a service.
+        // specified and then served; `profile` left it in Phase 11 for the same
+        // reason. Everything still here belongs to a phase that has not
+        // happened, and a path naming one would be describing an intention
+        // rather than a service.
+        //
+        // `profile` is deliberately not replaced by a narrower string. What the
+        // list guards is speculative surface, and /api/v1/me/profile is now
+        // real — a second profile path would be caught by the exact documented
+        // list above, which is the stronger check.
         foreach ([
             'trips', 'seat', 'requests', 'reviews', 'messages',
-            'conversations', 'vehicles', 'safety', 'notifications', 'profile',
+            'conversations', 'vehicles', 'safety', 'notifications',
             'verification', 'sessions', 'devices', 'register', 'login',
         ] as $absent) {
             self::assertStringNotContainsString($absent, $documented);

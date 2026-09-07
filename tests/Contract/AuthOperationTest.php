@@ -243,6 +243,14 @@ final class AuthOperationTest extends TestCase
                 $served[] = '/'.$route->uri();
             }
         }
+
+        // Deduplicated, because the router lists one entry per method and this
+        // assertion is about PATHS. /api/v1/me/profile is the first path to
+        // answer two verbs — GET and PUT — and without this it would appear
+        // twice and read as a defect. Nothing is weakened: the set of served
+        // paths is still compared exactly, and that both methods are documented
+        // is asserted in ProfileContractTest, where it belongs.
+        $served = array_values(array_unique($served));
         sort($served);
 
         self::assertSame([
@@ -251,6 +259,7 @@ final class AuthOperationTest extends TestCase
             '/api/v1/auth/otp/verify',
             '/api/v1/auth/refresh',
             '/api/v1/me',
+            '/api/v1/me/profile',
             '/api/v1/me/routes',
             '/api/v1/places',
             '/api/v1/routes',

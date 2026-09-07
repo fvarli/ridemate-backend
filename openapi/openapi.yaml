@@ -322,6 +322,105 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/v1/me/profile:
+    get:
+      operationId: getMyProfile
+      tags: [Profile]
+      summary: The signed-in member's public identity
+      security:
+        - bearerAuth: []
+      description: |
+        The member's own profile: what they are called, and the initials drawn
+        from it.
+
+        Separate from `/api/v1/me`, which returns a credential. That one carries
+        a phone number and a sign-in status and is shown to nobody; this one
+        carries what another member will eventually see. Keeping them apart is
+        what stops a phone number travelling with a name.
+
+        Deliberately two fields. There is no public profile id, because nothing
+        needs one — a member is reached through their own credential, and a
+        published route names its owner by their profile rather than by a
+        handle. There is no avatar, bio, rating, trip count, verification state
+        or Trust Score: RideMate has none of them, and a contract describing
+        them would be describing an intention.
+
+        `initials` is derived from `display_name` on every read rather than
+        stored, so the two cannot disagree. A client must render what it is
+        given and must not compute its own.
+      responses:
+        '200':
+          description: The caller's profile.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: saveMyProfile
+      tags: [Profile]
+      summary: Set the signed-in member's public identity
+      security:
+        - bearerAuth: []
+      description: |
+        Names the state the profile should be in, rather than a change to apply,
+        which is why this is a PUT and why it carries no `Idempotency-Key`.
+        Sending the same body twice leaves the same profile with the same name,
+        so a retry over a dropped connection is safe by the shape of the
+        operation — tier 2 of the idempotency policy in docs/api-conventions.md.
+
+        `201` when the profile did not exist and this request created it, `200`
+        when it did and this request rewrote it. The distinction is real: a
+        client that has just created its profile leaves setup, and one that
+        renamed does not.
+
+        Two first-time writes arriving together still produce one profile. The
+        request that lost the race reports `200`, because by the time it wrote,
+        the profile genuinely already existed.
+
+        The owner comes from the credential. There is no field naming an
+        account, and unknown fields are refused rather than ignored — including
+        `initials`, which the server derives and a client may not set.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileUpdate'
+      responses:
+        '200':
+          description: The profile existed and now says this.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileEnvelope'
+        '201':
+          description: The profile did not exist and was created.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
   /api/v1/places:
     get:
       operationId: listPlaces
@@ -913,6 +1012,70 @@ components:
             ended. Not a credential and not accepted as one.
           examples:
             - '00000000-0000-7000-8000-000000000001'
+
+    ProfileEnvelope:
+      type: object
+      additionalProperties: false
+      required: [profile]
+      properties:
+        profile:
+          $ref: '#/components/schemas/Profile'
+
+    Profile:
+      type: object
+      additionalProperties: false
+      required: [display_name, initials]
+      description: |
+        A member's public identity, and the whole of it.
+
+        What is absent is absent on purpose. There is no id — Phase 11 publishes
+        no public profile identifier — and no `account_id`, which is internal and
+        would tie a public representation to a credential. No `created_at` or
+        `updated_at`: those record when a row was touched, which is a fact about
+        the database rather than about the member, and publishing one means
+        supporting it afterwards.
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: |
+            As the member typed it, with surrounding whitespace removed. Stored
+            and returned in exactly that form, so what they see is what was
+            kept.
+          examples:
+            - 'İrem Yılmaz'
+        initials:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: |
+            Derived from `display_name` by the server: the first character of
+            the only token, or the first characters of the first and last when
+            there is more than one. Uppercased with Turkish casing, so `irem`
+            gives `İ` rather than `I`.
+
+            Never stored and never accepted from a client. A client renders this
+            value and does not compute its own — two implementations of the rule
+            would eventually disagree about a member's name.
+          examples:
+            - 'İY'
+
+    ProfileUpdate:
+      type: object
+      additionalProperties: false
+      required: [display_name]
+      description: |
+        The one thing a member supplies. `initials` is derived and is refused
+        here like any other unknown field; an owner is taken from the credential
+        and can never be named in a body.
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          examples:
+            - 'İrem Yılmaz'
 
     Me:
       type: object

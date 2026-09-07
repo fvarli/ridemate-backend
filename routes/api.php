@@ -7,6 +7,8 @@ use App\Http\Controllers\Api\V1\Auth\RefreshController;
 use App\Http\Controllers\Api\V1\Auth\RequestPasscodeController;
 use App\Http\Controllers\Api\V1\Auth\VerifyPasscodeController;
 use App\Http\Controllers\Api\V1\MeController;
+use App\Http\Controllers\Api\V1\Profiles\SaveProfileController;
+use App\Http\Controllers\Api\V1\Profiles\ShowProfileController;
 use App\Http\Controllers\Api\V1\Routes\CancelRouteController;
 use App\Http\Controllers\Api\V1\Routes\ListMyRoutesController;
 use App\Http\Controllers\Api\V1\Routes\ListPlacesController;
@@ -61,6 +63,31 @@ Route::post('auth/logout', LogoutController::class)
 Route::get('me', MeController::class)
     ->middleware('auth.token')
     ->name('me');
+
+/*
+ * The signed-in member's public identity.
+ *
+ * Separate from /me on purpose: that returns a credential — a phone number and
+ * whether it may sign in — and this returns what other members will eventually
+ * see. Folding them together would put a phone number one careless projection
+ * away from every surface that needs a name.
+ *
+ * PUT rather than POST because the body names the state the profile should be
+ * in, not a change to apply, so repeating it is safe by construction. There is
+ * no DELETE: nothing in the product removes a profile, and an endpoint for it
+ * would be a capability nobody asked for.
+ *
+ * Not throttled, for the same reason /me is not: the per-address budgets guard
+ * the endpoints that hand out credentials, and both of these already require
+ * one.
+ */
+Route::get('me/profile', ShowProfileController::class)
+    ->middleware('auth.token')
+    ->name('me.profile.show');
+
+Route::put('me/profile', SaveProfileController::class)
+    ->middleware('auth.token')
+    ->name('me.profile.save');
 
 /*
  * Publishing a journey, and the places one may run between.
