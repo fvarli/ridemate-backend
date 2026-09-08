@@ -123,6 +123,24 @@ final class DiscoverRoutesEndpointTest extends TestCase
         );
     }
 
+    /**
+     * A one-off that will already have departed by the time the test searches,
+     * so the query must step over it while filling a page.
+     */
+    private function publishDeparted(Account $driver, string $id, CarbonImmutable $at): void
+    {
+        app(PublishRoute::class)(
+            $driver,
+            $id,
+            $this->place('kadikoy-iskele'),
+            $this->place('levent-metro'),
+            RouteDeparture::fromInput(Recurrence::Once, '2026-09-10', '10:00', $this->timezone()),
+            3,
+            new RideRules(noSmoking: true, musicOk: false, noPets: false, quiet: false),
+            $at,
+        );
+    }
+
     private function id(string $tail): string
     {
         return '01991d00-0000-7000-8000-0000000000'.$tail;
@@ -315,6 +333,85 @@ final class DiscoverRoutesEndpointTest extends TestCase
 
         self::assertSame($expected, $seen);
         self::assertSame(count($seen), count(array_unique($seen)));
+    }
+
+    /**
+     * CARRIES WEIGHT. B1.1's page-filling, proved through HTTP with rejected
+     * candidates sitting between the eligible ones.
+     *
+     * Each page has to scan past two departed one-offs to find its single
+     * result, so a naive LIMIT would return empty pages here and the traversal
+     * would end early with routes still unseen.
+     *
+     * The clock is moved rather than passed: the controller reads the real one,
+     * so the only way to make a journey historical over HTTP is to be standing
+     * after it. Publication is handed its own earlier instant, which is how the
+     * routes were valid when they were published and past when they are read.
+     * Signing in happens at the later time so the credential is fresh.
+     */
+    public function test_paging_fills_pages_across_rejected_candidates(): void
+    {
+        $publishedAround = CarbonImmutable::parse('2026-09-10 09:00', $this->timezone());
+        $searchedAt = CarbonImmutable::parse('2026-09-10 11:00', $this->timezone());
+
+        CarbonImmutable::setTestNow($publishedAround);
+        $driver = $this->driverNamed('İrem Yılmaz');
+
+        $tick = 0;
+
+        // eligible, 2 rejected, eligible, 2 rejected, eligible
+        foreach (['21', '22', '23'] as $i => $tail) {
+            $at = $publishedAround->addSeconds($tick++);
+            CarbonImmutable::setTestNow($at);
+            $this->publish($driver, $this->id($tail), now: $at);
+
+            if ($i > 1) {
+                continue;
+            }
+
+            foreach ([0, 1] as $n) {
+                $at = $publishedAround->addSeconds($tick++);
+                CarbonImmutable::setTestNow($at);
+                $this->publishDeparted($driver, $this->id((string) (30 + $i * 2 + $n)), $at);
+            }
+        }
+
+        // Everything below is read from after the one-offs departed.
+        CarbonImmutable::setTestNow($searchedAt);
+        $credential = $this->credential();
+        $this->searcher();
+
+        $seen = [];
+        $query = $this->between() + ['limit' => 1];
+        $pages = 0;
+
+        do {
+            $response = $this->getJson(self::PATH.'?'.http_build_query($query), $credential);
+            $response->assertStatus(200);
+
+            /** @var array{routes: list<array<string, mixed>>, next_cursor: string|null} $body */
+            $body = $response->json();
+
+            foreach ($body['routes'] as $route) {
+                $seen[] = $route['id'];
+            }
+
+            $query = $this->between() + ['limit' => 1];
+            if ($body['next_cursor'] !== null) {
+                $query['cursor'] = $body['next_cursor'];
+            }
+
+            $pages++;
+            self::assertLessThan(12, $pages, 'paging must terminate');
+        } while ($body['next_cursor'] !== null);
+
+        CarbonImmutable::setTestNow();
+
+        self::assertSame(
+            [$this->id('23'), $this->id('22'), $this->id('21')],
+            $seen,
+            'every eligible route, once, newest first, across rejected candidates',
+        );
     }
 
     // -------------------------------------------------------------- refusals
