@@ -400,42 +400,164 @@ final class RouteDiscoveryTest extends TestCase
         self::assertSame(count($ids), count(array_unique($ids)));
     }
 
+    // ------------------------------------------------- filling a full page
+
     /**
-     * A page is filtered after the database chose it, so a short page is not
-     * the end of the list. The cursor is the only end-of-list signal.
+     * Publishes `$count` one-off routes that will already have departed, newest
+     * first, so they sit in front of anything published before them.
      */
-    public function test_a_short_page_still_reports_more(): void
+    private function publishDeparted(
+        Account $driver,
+        CarbonImmutable $from,
+        int $count,
+        int $offset = 40,
+    ): void {
+        for ($i = 0; $i < $count; $i++) {
+            $at = $from->addSeconds($i);
+            CarbonImmutable::setTestNow($at);
+            $this->publish(
+                $driver,
+                $this->id((string) ($offset + $i)),
+                recurrence: Recurrence::Once,
+                date: '2026-09-10',
+                time: '10:00',
+                now: $at,
+            );
+        }
+        CarbonImmutable::setTestNow();
+    }
+
+    /**
+     * CARRIES WEIGHT. Rejected candidates must not shorten a public page.
+     *
+     * The database picks candidates and the domain decides which are eligible,
+     * so a plain LIMIT would hand back a page short by however many the domain
+     * rejected. Here five departed one-offs sit in front of three good routes
+     * and a page of three is still a page of three.
+     */
+    public function test_ineligible_candidates_do_not_shorten_a_page(): void
     {
         $driver = $this->driverNamed('+905321234567', 'Ayşe Demir');
         $searcher = $this->driverNamed('+905329876543', 'Ali Can');
 
         $base = CarbonImmutable::parse('2026-09-10 09:00', $this->timezone());
 
-        // Newest is a one-off that will have departed by the time we search.
-        CarbonImmutable::setTestNow($base);
-        $this->publish($driver, $this->id('19'));
-        CarbonImmutable::setTestNow($base->addSeconds(1));
-        $this->publish(
-            $driver,
-            $this->id('20'),
-            recurrence: Recurrence::Once,
-            date: '2026-09-10',
-            time: '10:00',
-            now: $base->addSeconds(1),
-        );
+        // Three eligible, published first so they sort last.
+        foreach (['31', '32', '33'] as $offset => $tail) {
+            CarbonImmutable::setTestNow($base->addSeconds($offset));
+            $this->publish($driver, $this->id($tail));
+        }
         CarbonImmutable::setTestNow();
+
+        // Five that will have departed, in front of them.
+        $this->publishDeparted($driver, $base->addMinutes(1), 5);
 
         $page = $this->discover(
             $searcher,
-            limit: 1,
+            limit: 3,
             now: CarbonImmutable::parse('2026-09-10 11:00', $this->timezone()),
         );
 
-        self::assertSame([], $this->idsOf($page), 'the only row on this page had departed');
-        self::assertInstanceOf(
-            RouteCursor::class,
-            $page->nextCursor,
-            'an empty page is not the end of the list',
+        self::assertSame(
+            [$this->id('33'), $this->id('32'), $this->id('31')],
+            $this->idsOf($page),
+            'the page must be filled from behind the rejected candidates',
         );
+        self::assertNull($page->nextCursor, 'there was nothing after them');
+    }
+
+    /**
+     * CARRIES WEIGHT. Every eligible route exactly once, in order, across pages
+     * that have to scan past rejected candidates to fill themselves.
+     */
+    public function test_paging_across_rejected_candidates_returns_each_route_once(): void
+    {
+        $driver = $this->driverNamed('+905321234567', 'Ayşe Demir');
+        $searcher = $this->driverNamed('+905329876543', 'Ali Can');
+
+        $base = CarbonImmutable::parse('2026-09-10 09:00', $this->timezone());
+
+        // Four eligible, interleaved with departed one-offs so no window is
+        // ever cleanly eligible or cleanly rejected.
+        $expected = [];
+        foreach (['51', '52', '53', '54'] as $i => $tail) {
+            CarbonImmutable::setTestNow($base->addSeconds($i * 10));
+            $this->publish($driver, $this->id($tail));
+            array_unshift($expected, $this->id($tail));
+
+            $this->publishDeparted($driver, $base->addSeconds($i * 10 + 1), 2, 60 + $i * 2);
+        }
+        CarbonImmutable::setTestNow();
+
+        $now = CarbonImmutable::parse('2026-09-10 11:00', $this->timezone());
+
+        $seen = [];
+        $cursor = null;
+        $pages = 0;
+
+        do {
+            $page = $this->discover($searcher, cursor: $cursor, limit: 2, now: $now);
+            $seen = array_merge($seen, $this->idsOf($page));
+            $cursor = $page->nextCursor;
+            $pages++;
+
+            self::assertLessThan(10, $pages, 'paging must terminate');
+        } while ($cursor instanceof RouteCursor);
+
+        self::assertSame($expected, $seen, 'every eligible route, once, newest first');
+        self::assertSame(count($seen), count(array_unique($seen)));
+    }
+
+    /**
+     * CARRIES WEIGHT. A null cursor means exhausted, not "this window ended".
+     */
+    public function test_a_page_of_only_rejected_candidates_is_empty_and_final(): void
+    {
+        $driver = $this->driverNamed('+905321234567', 'Ayşe Demir');
+        $searcher = $this->driverNamed('+905329876543', 'Ali Can');
+
+        $base = CarbonImmutable::parse('2026-09-10 09:00', $this->timezone());
+        $this->publishDeparted($driver, $base, 4, 70);
+
+        $page = $this->discover(
+            $searcher,
+            limit: 2,
+            now: CarbonImmutable::parse('2026-09-10 11:00', $this->timezone()),
+        );
+
+        self::assertSame([], $this->idsOf($page));
+        self::assertNull(
+            $page->nextCursor,
+            'no eligible route exists anywhere behind these, so this is the end',
+        );
+    }
+
+    /**
+     * And a full page still reports more when more genuinely follow, even with
+     * rejected candidates in between.
+     */
+    public function test_a_filled_page_still_reports_what_follows(): void
+    {
+        $driver = $this->driverNamed('+905321234567', 'Ayşe Demir');
+        $searcher = $this->driverNamed('+905329876543', 'Ali Can');
+
+        $base = CarbonImmutable::parse('2026-09-10 09:00', $this->timezone());
+        foreach (['81', '82', '83'] as $offset => $tail) {
+            CarbonImmutable::setTestNow($base->addSeconds($offset));
+            $this->publish($driver, $this->id($tail));
+        }
+        CarbonImmutable::setTestNow();
+        $this->publishDeparted($driver, $base->addMinutes(1), 3, 90);
+
+        $now = CarbonImmutable::parse('2026-09-10 11:00', $this->timezone());
+        $first = $this->discover($searcher, limit: 2, now: $now);
+
+        self::assertSame([$this->id('83'), $this->id('82')], $this->idsOf($first));
+        self::assertInstanceOf(RouteCursor::class, $first->nextCursor);
+
+        $second = $this->discover($searcher, cursor: $first->nextCursor, limit: 2, now: $now);
+
+        self::assertSame([$this->id('81')], $this->idsOf($second));
+        self::assertNull($second->nextCursor);
     }
 }

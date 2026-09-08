@@ -7,10 +7,16 @@ namespace App\Routes;
 /**
  * A page of discovery results, and where the next one starts.
  *
- * `nextCursor` is null when there is nothing after this page — and only then.
- * An empty `routes` list does not mean the end: the domain filters a page after
- * the database has chosen it, so a page can be short, or even empty, while more
- * rows remain. Callers must read the cursor, never the count.
+ * `routes` is as long as the caller asked for whenever that many eligible
+ * routes exist. Candidates the domain rejects — a departure already behind us,
+ * an owner with no profile — are stepped over during the scan and never occupy
+ * a slot, so a short page means there were not enough eligible routes, not that
+ * the search happened to land on a bad window.
+ *
+ * `nextCursor` is present only when another eligible route was actually found
+ * beyond this page. **Null means genuinely exhausted**: there is no eligible
+ * route left anywhere behind this position, and asking again would return
+ * nothing. An empty page therefore always carries a null cursor.
  */
 final readonly class DiscoveryPage
 {

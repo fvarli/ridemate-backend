@@ -13,57 +13,56 @@ use Illuminate\Database\Eloquent\Builder;
 /**
  * Journeys somebody else has published between two places.
  *
- * EXACT ENDPOINTS, AND NOTHING SPATIAL
+ * MATCHING IS EXACT, AND DELIBERATELY NOT SPATIAL
  *
- * A route matches when its origin IS the requested origin and its destination
- * IS the requested destination. No radius, no corridor, no distance.
+ * Origin must be the requested origin and destination the requested
+ * destination, in that direction. No radius, no corridor, no distance: a
+ * straight line between two points is not a driving corridor, and the product
+ * has no routing data to build a real one from. `places.point` stays unread and
+ * unindexed until a phase can use it truthfully. The reasoning is recorded in
+ * the Phase 12 decision record rather than here.
  *
- * That is a decision about honesty rather than effort. The pilot catalogue is
- * five curated meeting points, and the closest two are a kilometre apart: a
- * radius small enough to be meaningful returns exactly what an equality check
- * returns, and one large enough to change the answer would start merging
- * places a driver deliberately chose between. A straight line between two
- * points is not a driving corridor either, and drawing one would be inventing
- * geometry the product does not have. Real corridor matching needs routing
- * data from somewhere; until it exists, equality is the strongest true thing.
+ * ONE IMPLEMENTATION OF THE CLOCK
  *
- * The `point` column on places stays where it is, unread and unindexed. It is
- * there for the phase that can use it truthfully.
+ * Whether a departure is still ahead of a member is RouteDeparture::state's
+ * answer, read in the route's own timezone. It is not restated in SQL, because
+ * two implementations of that rule would eventually disagree about a route on
+ * the day it departs.
  *
- * DIRECTION IS PART OF THE MATCH
+ * That is why paging works the way it does below. The database chooses
+ * candidates and the domain decides which are eligible, so a plain `LIMIT n`
+ * would return a page short by however many candidates the domain rejected —
+ * sometimes an empty one with perfectly good routes sitting just behind it. The
+ * scan advances through candidate windows instead, until it has enough eligible
+ * routes or the candidate set runs out.
  *
- * Kadıköy to Levent is not Levent to Kadıköy. Returning the reverse would offer
- * somebody a journey going the wrong way, which is worse than no result.
+ * THE INVARIANTS THAT MAKE THAT SAFE
  *
- * WHY THE CLOCK IS READ IN PHP AND NOT IN SQL
- *
- * Whether a departure is still ahead of a member is decided by
- * RouteDeparture::state, in the route's own timezone, and that is the only
- * implementation of the rule. Writing the comparison again in SQL would create
- * a second one, and the two would eventually disagree about a route on the day
- * it departs.
- *
- * So SQL applies a deliberately COARSE date bound — one that cannot exclude an
- * eligible row under any offset — and the domain makes the real decision on the
- * rows that come back. The bound exists to stop the query dragging years of
- * past journeys through the keyset, not to answer the question.
+ *   * ordering is `(created_at desc, id desc)` throughout, so each window
+ *     resumes exactly where the last one stopped;
+ *   * the cursor names the last route actually RETURNED, never the last
+ *     candidate scanned — rejected candidates are stepped over once and never
+ *     revisited, and no eligible route is stepped over at all;
+ *   * finding one eligible route BEYOND the page is what proves more exist, so
+ *     a null cursor means genuinely exhausted rather than "this window ended";
+ *   * the loop terminates because every iteration consumes at least one
+ *     candidate row and the candidate set is finite. There is no iteration cap,
+ *     because a cap would be an arbitrary horizon that silently truncated
+ *     somebody's results.
  */
 final class DiscoverRoutes
 {
     /**
      * A date bound loose enough to be wrong only in the safe direction.
      *
-     * Departure dates are stored as calendar dates in the route's own zone, and
-     * IANA offsets span roughly a day. Subtracting one whole day from the UTC
-     * date therefore cannot drop a route that is still upcoming anywhere, while
-     * still excluding everything genuinely historical.
+     * Departure dates are calendar dates in the route's own zone and IANA
+     * offsets span roughly a day, so subtracting one whole day from the UTC
+     * date cannot drop a route that is still upcoming anywhere. It is a
+     * pre-filter, not an answer: it keeps years of historical one-offs out of
+     * the scan without deciding anything the domain decides.
      */
     private const CONSERVATIVE_DATE_SLACK_DAYS = 1;
 
-    /**
-     * @param  string  $originPlaceId  the exact place a member wants to leave from
-     * @param  string  $destinationPlaceId  the exact place they want to reach
-     */
     public function __invoke(
         Account $searcher,
         string $originPlaceId,
@@ -74,63 +73,90 @@ final class DiscoverRoutes
     ): DiscoveryPage {
         $now ??= CarbonImmutable::now();
 
-        $query = $this->eligible($searcher, $originPlaceId, $destinationPlaceId, $now);
+        // One more than the caller asked for. Finding it is what distinguishes
+        // "there is another page" from "that was everything".
+        $wanted = $limit + 1;
 
-        if ($cursor instanceof RouteCursor) {
-            // The tuple comparison PostgreSQL understands directly, which is
-            // exactly the ordering below — one predicate rather than the nested
-            // OR that writing it by hand would need.
-            $query->whereRaw(
-                '(routes.created_at, routes.id) < (?, ?)',
-                [$cursor->createdAt, $cursor->id],
+        /** @var list<DiscoveredRoute> $eligible */
+        $eligible = [];
+        $scan = $cursor;
+
+        while (count($eligible) < $wanted) {
+            $candidates = $this
+                ->candidates($searcher, $originPlaceId, $destinationPlaceId, $now, $scan)
+                ->take($wanted)
+                ->get();
+
+            if ($candidates->isEmpty()) {
+                break;
+            }
+
+            foreach ($candidates as $route) {
+                $found = $this->eligible($route, $now);
+
+                if ($found instanceof DiscoveredRoute) {
+                    $eligible[] = $found;
+                }
+            }
+
+            // Advance past everything just examined, eligible or not. This is
+            // the SCAN position, and it is not what the caller is handed. The
+            // window is non-empty by the check above, so there is always a last
+            // row to advance to.
+            $lastScanned = $candidates->last();
+            $scan = new RouteCursor(
+                $lastScanned->created_at,
+                $lastScanned->id,
+                RouteCursor::DISCOVERY,
             );
+
+            // A short window means the candidate set is exhausted; asking again
+            // would return nothing.
+            if ($candidates->count() < $wanted) {
+                break;
+            }
         }
 
-        // One more than asked for, which is how the page learns whether
-        // anything follows it without a second query.
-        $rows = $query->take($limit + 1)->get();
-
-        $hasMore = $rows->count() > $limit;
-        $window = $rows->take($limit);
-
-        // The cursor names a position in the DATABASE's ordering, taken before
-        // the domain filter below. Deriving it from the surviving rows instead
-        // would skip everything the filter dropped at the end of a page.
-        $last = $window->last();
+        $hasMore = count($eligible) > $limit;
+        $page = array_slice($eligible, 0, $limit);
+        $last = $page === [] ? null : $page[count($page) - 1];
 
         return new DiscoveryPage(
-            // array_values, because `present` promises a list and a Collection
-            // makes no promise about its keys — true today by construction and
-            // not something this should depend on.
-            $this->present(array_values($window->all()), $now),
-            $hasMore && $last instanceof Route
-                ? new RouteCursor($last->created_at, $last->id, RouteCursor::DISCOVERY)
+            $page,
+            $hasMore && $last instanceof DiscoveredRoute
+                ? new RouteCursor(
+                    $last->route->created_at,
+                    $last->route->id,
+                    RouteCursor::DISCOVERY,
+                )
                 : null,
         );
     }
 
     /**
+     * The rows worth examining: everything structurally eligible, in order.
+     *
      * @return Builder<Route>
      */
-    private function eligible(
+    private function candidates(
         Account $searcher,
         string $originPlaceId,
         string $destinationPlaceId,
         CarbonImmutable $now,
+        ?RouteCursor $from,
     ): Builder {
-        return Route::query()
+        $query = Route::query()
             ->with(['originPlace', 'destinationPlace', 'account.profile'])
-            // A member discovers other people's journeys. Their own are in My
-            // Routes, and offering somebody a seat in their own car is noise at
-            // best and a bug report at worst.
+            // A member discovers other people's journeys; their own are in My
+            // Routes.
             ->where('account_id', '!=', $searcher->id)
             ->where('status', RouteStatus::Published->value)
             ->where('origin_place_id', $originPlaceId)
             ->where('destination_place_id', $destinationPlaceId)
-            // whereHas rather than a join: an owner has at most one profile, so
-            // a join could not multiply rows today — but it could the moment
-            // anything else is joined, and a subquery cannot duplicate a row by
-            // construction. The page size stays the page size.
+            // A subquery rather than a join: it cannot multiply a row, so a
+            // window is exactly as wide as it looks. Excluded here rather than
+            // afterwards so a route nobody can be named for never occupies a
+            // slot on somebody's page.
             ->whereHas('account.profile')
             ->where(function (Builder $q) use ($now): void {
                 // A recurring commute has no date to be behind us.
@@ -143,34 +169,32 @@ final class DiscoverRoutes
             })
             ->orderByDesc('created_at')
             ->orderByDesc('id');
-    }
 
-    /**
-     * Applies the canonical departure rule and pairs each route with its driver.
-     *
-     * @param  list<Route>  $routes
-     * @return list<DiscoveredRoute>
-     */
-    private function present(array $routes, CarbonImmutable $now): array
-    {
-        $discovered = [];
-
-        foreach ($routes as $route) {
-            if ($route->departureState($now) !== DepartureState::Upcoming) {
-                continue;
-            }
-
-            $driver = $route->account->profile;
-
-            // `whereHas` guarantees one exists; this satisfies the type checker
-            // and would catch a future query that dropped the constraint.
-            if (! $driver instanceof Profile) {
-                continue;
-            }
-
-            $discovered[] = new DiscoveredRoute($route, $driver);
+        if ($from instanceof RouteCursor) {
+            // The tuple comparison PostgreSQL understands directly, which is
+            // exactly the ordering above.
+            $query->whereRaw(
+                '(routes.created_at, routes.id) < (?, ?)',
+                [$from->createdAt, $from->id],
+            );
         }
 
-        return $discovered;
+        return $query;
+    }
+
+    /** The candidate paired with its driver, or null if the clock rejects it. */
+    private function eligible(Route $route, CarbonImmutable $now): ?DiscoveredRoute
+    {
+        if ($route->departureState($now) !== DepartureState::Upcoming) {
+            return null;
+        }
+
+        $driver = $route->account->profile;
+
+        // `whereHas` guarantees one exists; this satisfies the type checker and
+        // would catch a future query that dropped the constraint.
+        return $driver instanceof Profile
+            ? new DiscoveredRoute($route, $driver)
+            : null;
     }
 }
