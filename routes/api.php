@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\V1\MeController;
 use App\Http\Controllers\Api\V1\Profiles\SaveProfileController;
 use App\Http\Controllers\Api\V1\Profiles\ShowProfileController;
 use App\Http\Controllers\Api\V1\Routes\CancelRouteController;
+use App\Http\Controllers\Api\V1\Routes\DiscoverRoutesController;
 use App\Http\Controllers\Api\V1\Routes\ListMyRoutesController;
 use App\Http\Controllers\Api\V1\Routes\ListPlacesController;
 use App\Http\Controllers\Api\V1\Routes\PublishRouteController;
@@ -115,6 +116,22 @@ Route::post('routes', PublishRouteController::class)
  * describe, and would answer differently for "not a route id" and "not your
  * route", which is a difference worth not telling anyone.
  */
+/*
+ * Journeys other members have published between two places.
+ *
+ * A literal segment under /routes, which cannot be captured by the parameterised
+ * route below: that one constrains its id to a UUIDv7, and `discover` is not
+ * one. The constraint is therefore load-bearing rather than cosmetic, and a
+ * regression test says so.
+ *
+ * Not throttled, for the same reason the other authenticated reads are not: the
+ * per-address budgets guard the endpoints that hand out credentials, and this
+ * already requires one.
+ */
+Route::get('routes/discover', DiscoverRoutesController::class)
+    ->middleware('auth.token')
+    ->name('routes.discover');
+
 Route::get('me/routes', ListMyRoutesController::class)
     ->middleware('auth.token')
     ->name('me.routes.index');

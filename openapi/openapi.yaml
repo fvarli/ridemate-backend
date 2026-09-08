@@ -567,6 +567,65 @@ paths:
         '422':
           $ref: '#/components/responses/ValidationFailed'
 
+  /api/v1/routes/discover:
+    get:
+      operationId: discoverRoutes
+      tags: [Routes]
+      summary: Journeys other members have published between two places
+      security:
+        - bearerAuth: []
+      description: |
+        Published, upcoming journeys from one pilot place to another, most
+        recently published first, excluding the caller's own.
+
+        **Endpoints match exactly, and matching is not spatial.** The origin must
+        be the requested origin and the destination the requested destination, in
+        that direction. There is no radius, no corridor and no distance: a
+        straight line between two points is not a driving corridor, and RideMate
+        has no routing data to build a real one from. A journey in the opposite
+        direction is not a result.
+
+        **What a result is not.** No rating, verification, trip count, trust
+        score, approval rate, compatibility, walking time, saving or cost appears
+        here, because the product has none of them. `seats_offered` is what the
+        driver offered, never what remains — nothing tracks remaining seats until
+        seat requests exist.
+
+        **A page is filled, not truncated.** Journeys the server rejects — a
+        departure already behind us, an owner who has not chosen a display name —
+        are stepped over while paging and never occupy a slot, so a short page
+        means there were not that many results rather than that the search landed
+        badly.
+
+        `next_cursor` is present only when another result genuinely exists behind
+        this page. **Null means there are no more**, and an empty page therefore
+        always carries a null cursor.
+
+        The cursor is **opaque** and belongs to this endpoint. One issued by
+        another list is refused: the two order the same rows differently, and
+        resuming one from the other would land somewhere meaningless.
+      parameters:
+        - $ref: '#/components/parameters/OriginPlaceId'
+        - $ref: '#/components/parameters/DestinationPlaceId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of journeys other members published.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveryPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
   /api/v1/routes/{routeId}/cancel:
     post:
       operationId: cancelRoute
@@ -729,6 +788,25 @@ components:
         The route's identifier, as the client generated it when publishing.
       schema:
         $ref: '#/components/schemas/RouteId'
+
+    OriginPlaceId:
+      name: origin_place_id
+      in: query
+      required: true
+      description: |
+        The place a journey must start at, by its id from `GET /api/v1/places`.
+      schema:
+        $ref: '#/components/schemas/PlaceId'
+
+    DestinationPlaceId:
+      name: destination_place_id
+      in: query
+      required: true
+      description: |
+        The place a journey must end at. It must differ from the origin: a
+        journey from a place to itself is not a journey.
+      schema:
+        $ref: '#/components/schemas/PlaceId'
 
     Cursor:
       name: cursor
@@ -1410,6 +1488,99 @@ components:
       properties:
         route:
           $ref: '#/components/schemas/Route'
+
+    DiscoveryPage:
+      type: object
+      additionalProperties: false
+      required: [routes, next_cursor]
+      description: |
+        A page of journeys other members published, most recently published
+        first. `next_cursor` is null when no further result exists.
+      properties:
+        routes:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscoveredRoute'
+        next_cursor:
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 512
+            - type: 'null'
+
+    DiscoveredRoute:
+      type: object
+      additionalProperties: false
+      required:
+        [id, origin, destination, recurrence, departure_date, departure_time,
+         timezone, departure_state, seats_offered, rules, driver]
+      description: |
+        A published journey as another member sees it.
+
+        Deliberately narrower than `Route`, which is what an owner sees of their
+        own. `status`, `published_at` and `cancelled_at` are absent: every route
+        here is published and upcoming by construction, and when a row was
+        written is a fact about the database rather than about the journey.
+      properties:
+        id:
+          $ref: '#/components/schemas/RouteId'
+        origin:
+          $ref: '#/components/schemas/Place'
+        destination:
+          $ref: '#/components/schemas/Place'
+        recurrence:
+          $ref: '#/components/schemas/Recurrence'
+        departure_date:
+          oneOf:
+            - $ref: '#/components/schemas/DepartureDate'
+            - type: 'null'
+          description: |
+            The calendar day of a one-off journey, and null for a recurring one,
+            which has no single date.
+        departure_time:
+          $ref: '#/components/schemas/DepartureTime'
+        timezone:
+          type: string
+          description: The IANA zone the departure is read in. Server-set.
+          examples:
+            - 'Europe/Istanbul'
+        departure_state:
+          $ref: '#/components/schemas/DepartureState'
+        seats_offered:
+          $ref: '#/components/schemas/SeatsOffered'
+        rules:
+          $ref: '#/components/schemas/RideRules'
+        driver:
+          $ref: '#/components/schemas/DiscoveredDriver'
+
+    DiscoveredDriver:
+      type: object
+      additionalProperties: false
+      required: [display_name, initials]
+      description: |
+        Who published the journey, in the two fields a profile has.
+
+        No id of any kind: neither an account nor a profile identifier is
+        published anywhere in this API, and a result a stranger reads is the last
+        place to begin. No rating, verification, trip count, trust score or
+        approval rate either — none of them exists, and a plausible figure beside
+        a real name is how a fixture becomes a claim.
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          examples:
+            - 'İrem Yılmaz'
+        initials:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: |
+            Derived by the server from the display name. A client renders this
+            value and never computes its own.
+          examples:
+            - 'İY'
 
     RoutePage:
       type: object

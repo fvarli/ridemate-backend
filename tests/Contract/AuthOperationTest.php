@@ -263,6 +263,7 @@ final class AuthOperationTest extends TestCase
             '/api/v1/me/routes',
             '/api/v1/places',
             '/api/v1/routes',
+            '/api/v1/routes/discover',
             '/api/v1/routes/{routeId}/cancel',
         ], $served);
 
