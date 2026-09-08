@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Str;
 
 /**
- * A position in a member's own list of routes.
+ * A position in a keyset-paginated list of routes.
  *
  * WHY IT IS ENCRYPTED RATHER THAN ENCODED
  *
@@ -24,13 +24,21 @@ use Illuminate\Support\Str;
  * WHAT IT CARRIES, AND WHAT IT DOES NOT
  *
  * A version tag and the keyset tuple. No account id, no phone number, no place
- * label: the listing query is scoped to the caller regardless, so a cursor is a
- * position rather than a capability, and handing one to somebody else would let
- * them page through their OWN list from an odd offset and nothing more.
+ * label: every listing query is scoped by its own predicates regardless, so a
+ * cursor is a position rather than a capability, and handing one to somebody
+ * else would let them page through a list they could already read.
  *
  * The version tag is what makes a change of shape fail closed. A cursor issued
  * by an older or newer format decodes to the wrong arity or the wrong prefix
  * and is refused, rather than being read as a tuple that happens to fit.
+ *
+ * IT ALSO SEPARATES THE SURFACES
+ *
+ * Two lists share this shape — a member's own routes, and discovery — and each
+ * names its own version. That is not decoration: the two are ordered by the
+ * same tuple but filtered completely differently, so a cursor from one would
+ * resume the other at a position that is arithmetically valid and semantically
+ * meaningless. Naming the surface makes that a clean refusal instead.
  */
 final readonly class RouteCursor
 {
@@ -38,7 +46,10 @@ final readonly class RouteCursor
      * Bumped when the tuple changes. An old cursor then fails cleanly instead
      * of being reinterpreted under new rules.
      */
-    private const VERSION = 'rm.myroutes.v1';
+    public const MY_ROUTES = 'rm.myroutes.v1';
+
+    /** Discovery pages the same tuple over a different set of rows. */
+    public const DISCOVERY = 'rm.discovery.v1';
 
     private const SEPARATOR = '|';
 
@@ -55,12 +66,13 @@ final readonly class RouteCursor
     public function __construct(
         public CarbonImmutable $createdAt,
         public string $id,
+        public string $version = self::MY_ROUTES,
     ) {}
 
     public function encode(): string
     {
         return Crypt::encryptString(implode(self::SEPARATOR, [
-            self::VERSION,
+            $this->version,
             $this->createdAt->format(self::INSTANT_FORMAT),
             $this->id,
         ]));
@@ -74,7 +86,7 @@ final readonly class RouteCursor
      * simply not a cursor. The caller turns that into a validation failure,
      * because a bad cursor is a bad request and not a server fault.
      */
-    public static function decode(string $cursor): ?self
+    public static function decode(string $cursor, string $version = self::MY_ROUTES): ?self
     {
         try {
             $plain = Crypt::decryptString($cursor);
@@ -84,7 +96,7 @@ final readonly class RouteCursor
 
         $parts = explode(self::SEPARATOR, $plain);
 
-        if (count($parts) !== 3 || $parts[0] !== self::VERSION) {
+        if (count($parts) !== 3 || $parts[0] !== $version) {
             return null;
         }
 
@@ -100,6 +112,6 @@ final readonly class RouteCursor
             return null;
         }
 
-        return new self($createdAt, $id);
+        return new self($createdAt, $id, $version);
     }
 }
