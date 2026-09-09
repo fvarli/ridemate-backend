@@ -46,4 +46,32 @@ enum RefusalReason: string
 
     /** This member has already asked about this journey, under another id. */
     case AlreadyRequested = 'already_requested';
+
+    /**
+     * The request has been accepted, and acceptance is an end.
+     *
+     * Nothing in Phase 13 v1 un-accepts: a passenger cannot withdraw a seat the
+     * driver agreed to give them, because the driver has already planned around
+     * it and nothing tells them it went away.
+     */
+    case AlreadyAccepted = 'already_accepted';
+
+    /** The request has been declined, and declining is an end too. */
+    case AlreadyDecided = 'already_decided';
+
+    /** The passenger withdrew the asking, so there is nothing left to answer. */
+    case Withdrawn = 'withdrawn';
+
+    /**
+     * The journey was cancelled or has departed, so no NEW seat can be given on
+     * it.
+     *
+     * Only accept raises this. Declining and withdrawing close a request rather
+     * than creating an obligation, so a dead journey does not stop either — and
+     * the driver owns this route, so naming the reason discloses nothing.
+     */
+    case RouteUnavailable = 'route_unavailable';
+
+    /** Every offered seat is already accepted. */
+    case RouteFull = 'route_full';
 }

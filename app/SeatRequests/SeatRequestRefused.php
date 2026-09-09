@@ -67,6 +67,46 @@ final class SeatRequestRefused extends RuntimeException
         );
     }
 
+    public static function alreadyAccepted(): self
+    {
+        return new self(
+            RefusalReason::AlreadyAccepted,
+            'That seat request has already been accepted.',
+        );
+    }
+
+    public static function alreadyDecided(): self
+    {
+        return new self(
+            RefusalReason::AlreadyDecided,
+            'That seat request has already been decided.',
+        );
+    }
+
+    public static function withdrawn(): self
+    {
+        return new self(
+            RefusalReason::Withdrawn,
+            'That seat request was withdrawn by the passenger.',
+        );
+    }
+
+    public static function routeUnavailable(): self
+    {
+        return new self(
+            RefusalReason::RouteUnavailable,
+            'That journey is no longer running, so no seat can be given on it.',
+        );
+    }
+
+    public static function routeFull(): self
+    {
+        return new self(
+            RefusalReason::RouteFull,
+            'Every offered seat on that journey is already accepted.',
+        );
+    }
+
     public static function alreadyRequested(SeatRequest $existing): self
     {
         return new self(
