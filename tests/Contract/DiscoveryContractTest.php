@@ -74,6 +74,9 @@ final class DiscoveryContractTest extends TestCase
                 'quiet' => false,
             ],
             'driver' => ['display_name' => 'İrem Yılmaz', 'initials' => 'İY'],
+            // Present on every result from Phase 13, and null for the common
+            // case: the caller has not asked about this journey.
+            'my_seat_request' => null,
         ];
     }
 

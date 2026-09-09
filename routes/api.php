@@ -14,6 +14,12 @@ use App\Http\Controllers\Api\V1\Routes\DiscoverRoutesController;
 use App\Http\Controllers\Api\V1\Routes\ListMyRoutesController;
 use App\Http\Controllers\Api\V1\Routes\ListPlacesController;
 use App\Http\Controllers\Api\V1\Routes\PublishRouteController;
+use App\Http\Controllers\Api\V1\SeatRequests\AcceptSeatRequestController;
+use App\Http\Controllers\Api\V1\SeatRequests\DeclineSeatRequestController;
+use App\Http\Controllers\Api\V1\SeatRequests\ListMySeatRequestsController;
+use App\Http\Controllers\Api\V1\SeatRequests\ListRouteSeatRequestsController;
+use App\Http\Controllers\Api\V1\SeatRequests\RequestSeatController;
+use App\Http\Controllers\Api\V1\SeatRequests\WithdrawSeatRequestController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -140,3 +146,48 @@ Route::post('routes/{routeId}/cancel', CancelRouteController::class)
     ->middleware('auth.token')
     ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
     ->name('routes.cancel');
+
+/*
+ * Seat requests.
+ *
+ * A passenger asks, and the driver who owns the journey answers.
+ *
+ * Both `{routeId}` paths carry the same UUIDv7 constraint as cancellation, and
+ * for the same load-bearing reason: `routes/discover` is a literal segment that
+ * a looser parameter would swallow. `{requestId}` is constrained identically, so
+ * a malformed id is an ordinary 404 rather than a 422 the contract does not
+ * describe — and so it answers the same as an id that is real but not the
+ * caller's, which is a difference worth not telling anyone.
+ *
+ * Not throttled, for the same reason the other authenticated writes are not:
+ * the per-address budgets guard the endpoints that hand out credentials, these
+ * already require one, and asking is idempotent on an id the client chose.
+ */
+Route::post('routes/{routeId}/seat-requests', RequestSeatController::class)
+    ->middleware('auth.token')
+    ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->name('routes.seat-requests.store');
+
+Route::get('routes/{routeId}/seat-requests', ListRouteSeatRequestsController::class)
+    ->middleware('auth.token')
+    ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->name('routes.seat-requests.index');
+
+Route::get('me/seat-requests', ListMySeatRequestsController::class)
+    ->middleware('auth.token')
+    ->name('me.seat-requests.index');
+
+Route::post('seat-requests/{requestId}/withdraw', WithdrawSeatRequestController::class)
+    ->middleware('auth.token')
+    ->where('requestId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->name('seat-requests.withdraw');
+
+Route::post('seat-requests/{requestId}/accept', AcceptSeatRequestController::class)
+    ->middleware('auth.token')
+    ->where('requestId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->name('seat-requests.accept');
+
+Route::post('seat-requests/{requestId}/decline', DeclineSeatRequestController::class)
+    ->middleware('auth.token')
+    ->where('requestId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->name('seat-requests.decline');

@@ -39,8 +39,8 @@ final class DeclineSeatRequest
                     $request,
                     wasAlreadyInTargetState: true,
                 ),
-                SeatRequestStatus::Accepted => throw SeatRequestRefused::alreadyAccepted(),
-                SeatRequestStatus::Withdrawn => throw SeatRequestRefused::withdrawn(),
+                SeatRequestStatus::Accepted => throw SeatRequestRefused::alreadyAccepted($request),
+                SeatRequestStatus::Withdrawn => throw SeatRequestRefused::withdrawn($request),
                 SeatRequestStatus::Pending => $this->decline($request, $now),
             };
         });

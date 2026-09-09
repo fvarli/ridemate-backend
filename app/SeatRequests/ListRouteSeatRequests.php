@@ -5,12 +5,10 @@ declare(strict_types=1);
 namespace App\SeatRequests;
 
 use App\Models\Account;
-use App\Models\Profile;
 use App\Models\Route;
 use App\Models\SeatRequest;
 use App\Support\KeysetCursor;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
-use RuntimeException;
 
 /**
  * Who has asked for a seat on one of the caller's journeys, newest first.
@@ -28,6 +26,8 @@ use RuntimeException;
  */
 final class ListRouteSeatRequests
 {
+    public function __construct(private readonly SeatRequestViews $views) {}
+
     /** This surface's cursors, refused by every other feed. */
     public const CURSOR = 'rm.routerequests.v1';
 
@@ -70,7 +70,7 @@ final class ListRouteSeatRequests
 
         $requests = [];
         foreach ($page as $request) {
-            $requests[] = $this->incoming($request);
+            $requests[] = $this->views->incoming($request);
         }
 
         $last = $page->last();
@@ -81,19 +81,5 @@ final class ListRouteSeatRequests
                 ? new KeysetCursor($last->created_at, $last->id, self::CURSOR)
                 : null,
         );
-    }
-
-    private function incoming(SeatRequest $request): IncomingSeatRequest
-    {
-        $passenger = $request->passenger->profile;
-
-        if (! $passenger instanceof Profile) {
-            // Asking requires a profile, so this cannot happen. If it does, the
-            // driver is shown nothing rather than a placeholder standing in for
-            // a person they are being asked to travel with.
-            throw new RuntimeException("Seat request {$request->id} has no passenger profile.");
-        }
-
-        return new IncomingSeatRequest($request, $passenger);
     }
 }

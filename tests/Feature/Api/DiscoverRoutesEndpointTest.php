@@ -209,10 +209,15 @@ final class DiscoverRoutesEndpointTest extends TestCase
         )->json();
 
         self::assertSame(['routes', 'next_cursor'], array_keys($body));
+        // `my_seat_request` joined the projection in Phase 13, and it is the
+        // one per-viewer field here: the CALLER'S own asking about this
+        // journey, never anybody else's, and never a count. It exists so a
+        // reloaded card knows it cannot ask again rather than finding out from
+        // a 409 after the member taps.
         self::assertSame([
             'id', 'origin', 'destination', 'recurrence', 'departure_date',
             'departure_time', 'timezone', 'departure_state', 'seats_offered',
-            'rules', 'driver',
+            'rules', 'driver', 'my_seat_request',
         ], array_keys($body['routes'][0]));
 
         /** @var array<string, mixed> $driver */

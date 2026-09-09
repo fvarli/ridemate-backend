@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Responses;
 
+use App\Models\SeatRequest;
 use App\Routes\DiscoveredRoute;
 use App\Routes\DiscoveryPage;
 use Carbon\CarbonImmutable;
@@ -37,14 +38,19 @@ use Carbon\CarbonImmutable;
 final class DiscoveryPayload
 {
     /**
+     * @param  array<string, SeatRequest>  $mine  the caller's own asking per route id,
+     *                                            resolved in one query for this page only
      * @return array{routes: list<array<string, mixed>>, next_cursor: string|null}
      */
-    public static function page(DiscoveryPage $page, ?CarbonImmutable $now = null): array
-    {
+    public static function page(
+        DiscoveryPage $page,
+        array $mine,
+        ?CarbonImmutable $now = null,
+    ): array {
         $routes = [];
 
         foreach ($page->routes as $found) {
-            $routes[] = self::from($found, $now);
+            $routes[] = self::from($found, $mine[$found->route->id] ?? null, $now);
         }
 
         return [
@@ -59,8 +65,11 @@ final class DiscoveryPayload
     /**
      * @return array<string, mixed>
      */
-    private static function from(DiscoveredRoute $found, ?CarbonImmutable $now): array
-    {
+    private static function from(
+        DiscoveredRoute $found,
+        ?SeatRequest $mine,
+        ?CarbonImmutable $now,
+    ): array {
         $route = $found->route;
 
         return [
@@ -87,6 +96,16 @@ final class DiscoveryPayload
             'driver' => [
                 'display_name' => $found->driver->display_name,
                 'initials' => $found->driver->initials(),
+            ],
+            // The caller's OWN asking about this journey, and nothing else
+            // about anybody else's. Without it the card would offer to request
+            // a seat again after the app restarts — the server already knows
+            // it cannot, and a screen must not offer an action the server has
+            // already ruled out. Lifetime uniqueness means zero or one, so a
+            // terminal state here never becomes requestable again.
+            'my_seat_request' => $mine === null ? null : [
+                'id' => $mine->id,
+                'status' => $mine->status->value,
             ],
         ];
     }

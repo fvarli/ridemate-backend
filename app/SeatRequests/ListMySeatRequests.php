@@ -5,12 +5,9 @@ declare(strict_types=1);
 namespace App\SeatRequests;
 
 use App\Models\Account;
-use App\Models\Profile;
-use App\Models\Route;
 use App\Models\SeatRequest;
 use App\Support\KeysetCursor;
 use Carbon\CarbonImmutable;
-use RuntimeException;
 
 /**
  * Everything this member has asked for, newest first.
@@ -29,6 +26,8 @@ use RuntimeException;
  */
 final class ListMySeatRequests
 {
+    public function __construct(private readonly SeatRequestViews $views) {}
+
     /** This surface's cursors, refused by every other feed. */
     public const CURSOR = 'rm.seatrequests.v1';
 
@@ -70,7 +69,7 @@ final class ListMySeatRequests
 
         $requests = [];
         foreach ($page as $request) {
-            $requests[] = $this->own($request, $now);
+            $requests[] = $this->views->own($request, $now);
         }
 
         $last = $page->last();
@@ -80,32 +79,6 @@ final class ListMySeatRequests
             $hasMore && $last instanceof SeatRequest
                 ? new KeysetCursor($last->created_at, $last->id, self::CURSOR)
                 : null,
-        );
-    }
-
-    private function own(SeatRequest $request, ?CarbonImmutable $now): OwnSeatRequest
-    {
-        // No guard on the route itself: the foreign key is NOT NULL and
-        // cascades, so a request without its journey cannot exist, and a dead
-        // check would only read as if it could.
-        $route = $request->route;
-
-        $driver = $route->account->profile;
-
-        if (! $driver instanceof Profile) {
-            // A route can only be discovered — and so only requested — when its
-            // owner has a profile. Rather than synthesise a name or blank
-            // initials for a driver who has none, this fails: a fabricated
-            // identity on the screen that names a stranger is the worst
-            // available outcome.
-            throw new RuntimeException("Route {$route->id} has no driver profile.");
-        }
-
-        return new OwnSeatRequest(
-            $request,
-            $route,
-            $route->departureState($now),
-            $driver,
         );
     }
 }

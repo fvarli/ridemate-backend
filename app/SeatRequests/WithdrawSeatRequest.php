@@ -44,8 +44,8 @@ final class WithdrawSeatRequest
                     $request,
                     wasAlreadyInTargetState: true,
                 ),
-                SeatRequestStatus::Accepted => throw SeatRequestRefused::alreadyAccepted(),
-                SeatRequestStatus::Declined => throw SeatRequestRefused::alreadyDecided(),
+                SeatRequestStatus::Accepted => throw SeatRequestRefused::alreadyAccepted($request),
+                SeatRequestStatus::Declined => throw SeatRequestRefused::alreadyDecided($request),
                 SeatRequestStatus::Pending => $this->withdraw($request, $now),
             };
         });

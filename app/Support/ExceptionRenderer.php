@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Support;
 
+use App\SeatRequests\RefusalReason;
+use App\SeatRequests\SeatRequestRefused;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -44,6 +46,13 @@ final class ExceptionRenderer
     {
         return match (true) {
             $e instanceof ValidationException => [ApiError::VALIDATION_FAILED, 422, $e->errors()],
+            // Before the generic HttpExceptionInterface arm below, which
+            // answers every refusal with `details: null`. A seat request has
+            // ten distinct ways to be refused and the client may never display
+            // `message`, so without a machine-readable discriminator the app
+            // would show one generic sentence for states the server knows
+            // exactly. This is the only exception type that carries one.
+            $e instanceof SeatRequestRefused => self::refusal($e),
             $e instanceof AuthenticationException => [ApiError::UNAUTHENTICATED, 401, null],
             $e instanceof AuthorizationException => [ApiError::FORBIDDEN, 403, null],
             $e instanceof ModelNotFoundException => [ApiError::NOT_FOUND, 404, null],
@@ -57,6 +66,36 @@ final class ExceptionRenderer
             ],
             default => [ApiError::INTERNAL_ERROR, 500, null],
         };
+    }
+
+    /**
+     * A seat-request refusal, as a status, a code and a stable reason.
+     *
+     * `profile_required` is a 422 rather than a 409: the target is a valid
+     * journey and the request is well formed — what is missing is the caller's
+     * own prerequisite, which is the shape validation already describes.
+     * Everything else is the resource not being in the expected state, which
+     * is what `conflict` means.
+     *
+     * `details.reason` is the contract; renaming one is breaking. `message`
+     * stays developer-facing English that no client displays.
+     *
+     * @return array{0: string, 1: int, 2: array<string, mixed>}
+     */
+    private static function refusal(SeatRequestRefused $e): array
+    {
+        $details = ['reason' => $e->reason->value];
+
+        // Only where the caller is already entitled to see this row: their own
+        // asking, or one on a journey they own. `id_already_used` deliberately
+        // carries nothing — the row behind it may be somebody else's.
+        if ($e->existing !== null) {
+            $details['current_status'] = $e->existing->status->value;
+        }
+
+        return $e->reason === RefusalReason::ProfileRequired
+            ? [ApiError::VALIDATION_FAILED, 422, $details]
+            : [ApiError::CONFLICT, 409, $details];
     }
 
     private static function codeForStatus(int $status): string

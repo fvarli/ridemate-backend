@@ -7,7 +7,9 @@ namespace App\Http\Controllers\Api\V1\Routes;
 use App\Auth\AuthContext;
 use App\Http\Requests\DiscoverRoutesRequest;
 use App\Http\Responses\DiscoveryPayload;
+use App\Routes\DiscoveredRoute;
 use App\Routes\DiscoverRoutes;
+use App\SeatRequests\MySeatRequestLookup;
 use Illuminate\Http\JsonResponse;
 
 /**
@@ -29,15 +31,28 @@ final class DiscoverRoutesController
     public function __invoke(
         DiscoverRoutesRequest $request,
         DiscoverRoutes $discover,
+        MySeatRequestLookup $mine,
     ): JsonResponse {
+        $caller = AuthContext::of($request)->account;
+
         $page = $discover(
-            AuthContext::of($request)->account,
+            $caller,
             $request->originPlaceId(),
             $request->destinationPlaceId(),
             $request->cursor(),
             $request->limit(),
         );
 
-        return new JsonResponse(DiscoveryPayload::page($page));
+        // After the page is settled, never during the fill scan: one query for
+        // the ids that actually survived, rather than one per candidate looked
+        // at or one per route returned.
+        $routeIds = array_map(
+            static fn (DiscoveredRoute $found): string => $found->route->id,
+            $page->routes,
+        );
+
+        return new JsonResponse(
+            DiscoveryPayload::page($page, $mine->forRoutes($caller, $routeIds)),
+        );
     }
 }

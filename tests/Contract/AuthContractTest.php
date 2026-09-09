@@ -96,6 +96,11 @@ final class AuthContractTest extends TestCase
             '/api/v1/me/routes',
             '/api/v1/routes/discover',
             '/api/v1/routes/{routeId}/cancel',
+            '/api/v1/routes/{routeId}/seat-requests',
+            '/api/v1/me/seat-requests',
+            '/api/v1/seat-requests/{requestId}/withdraw',
+            '/api/v1/seat-requests/{requestId}/accept',
+            '/api/v1/seat-requests/{requestId}/decline',
         ], array_keys($paths));
     }
 
@@ -109,17 +114,17 @@ final class AuthContractTest extends TestCase
         $documented = implode(' ', array_keys($paths));
 
         // `routes` left this list in Phase 10, when route publication was
-        // specified and then served; `profile` left it in Phase 11 for the same
-        // reason. Everything still here belongs to a phase that has not
-        // happened, and a path naming one would be describing an intention
-        // rather than a service.
+        // specified and then served; `profile` left it in Phase 11 and
+        // `seat`/`requests` in Phase 13, each for the same reason. Everything
+        // still here belongs to a phase that has not happened, and a path
+        // naming one would be describing an intention rather than a service.
         //
-        // `profile` is deliberately not replaced by a narrower string. What the
-        // list guards is speculative surface, and /api/v1/me/profile is now
-        // real — a second profile path would be caught by the exact documented
-        // list above, which is the stronger check.
+        // None of the three is replaced by a narrower string. What this list
+        // guards is speculative surface, and a second seat-request path would
+        // be caught by the exact documented list above — which is the stronger
+        // check, and the one that grows deliberately.
         foreach ([
-            'trips', 'seat', 'requests', 'reviews', 'messages',
+            'trips', 'reviews', 'messages',
             'conversations', 'vehicles', 'safety', 'notifications',
             'verification', 'sessions', 'devices', 'register', 'login',
         ] as $absent) {
@@ -213,6 +218,7 @@ final class AuthContractTest extends TestCase
 
         self::assertSame([
             'Unauthenticated', 'Forbidden', 'ValidationFailed', 'NotFound', 'Conflict',
+            'SeatRequestConflict',
             'RateLimited', 'InternalError',
         ], array_keys($responses));
 

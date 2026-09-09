@@ -671,6 +671,281 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
+  /api/v1/routes/{routeId}/seat-requests:
+    post:
+      operationId: requestSeat
+      tags: [Seat requests]
+      summary: Ask a driver for a seat
+      security:
+        - bearerAuth: []
+      description: |
+        Asks for one seat on a journey somebody else published.
+
+        **The id is the client's, and it is what makes this safe to retry.** The
+        same id is the same asking, so a request repeated over a dropped
+        connection cannot become a second one: the first attempt answers `201`
+        and every repeat answers `200` with the request that already exists.
+
+        **A retry is judged on identity alone.** It succeeds even if the journey
+        has since been cancelled or has departed, and even if the request has
+        since been accepted, declined or withdrawn — the asking happened, and a
+        lost response does not undo it.
+
+        **Asking is not taking.** No seat is held and no capacity is consumed:
+        those bind when the driver accepts. A journey every seat of which is
+        already accepted can still be asked about.
+
+        **One asking per journey, for that journey's lifetime.** A second one
+        under a different id is refused, and a withdrawn or declined request does
+        not free the slot — re-requesting is not a policy this phase has.
+
+        Phase 13 accepts **one-off journeys only**. A recurring plan has no single
+        departure to hold a seat on.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeatRequestCreate'
+      responses:
+        '201':
+          description: The asking was recorded.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MySeatRequestEnvelope'
+        '200':
+          description: |
+            The same asking, already recorded. A retry of a request that landed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MySeatRequestEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: |
+            No such journey — or one the caller may not ask about, which answers
+            identically. A cancelled journey and one that has departed are both
+            invisible to a passenger, and saying which id exists would confirm it.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          $ref: '#/components/responses/SeatRequestConflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+    get:
+      operationId: listRouteSeatRequests
+      tags: [Seat requests]
+      summary: Who has asked for a seat on your journey
+      security:
+        - bearerAuth: []
+      description: |
+        The askings on a journey the caller published, most recent first.
+
+        **Owner only**, and a journey somebody else published answers exactly as
+        one that does not exist.
+
+        Not filtered by the journey's current state: a driver who cancelled still
+        has people to answer, and can still decline them.
+
+        The passenger is a display name and initials. No account or profile id,
+        no phone number, and no rating, trust score or verification — the product
+        has none of those.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of askings on this journey.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteSeatRequestPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /api/v1/me/seat-requests:
+    get:
+      operationId: listMySeatRequests
+      tags: [Seat requests]
+      summary: What you have asked for
+      security:
+        - bearerAuth: []
+      description: |
+        The caller's own askings, most recent first.
+
+        **History, not a feed.** Every status appears, and a journey that was
+        later cancelled or has since departed stays here — this is the only
+        surface that says what came of an asking, and dropping rows because the
+        journey moved on would erase the member's own record.
+
+        The request's `status` and the journey's `status` are independent truths.
+        A request stays `accepted` beside a route that is `cancelled`; neither is
+        rewritten to agree with the other, and there is no synthetic state that
+        pretends the driver decided something they did not.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of the caller's askings.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MySeatRequestPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /api/v1/seat-requests/{requestId}/withdraw:
+    post:
+      operationId: withdrawSeatRequest
+      tags: [Seat requests]
+      summary: Take back your own asking
+      security:
+        - bearerAuth: []
+      description: |
+        **Naturally idempotent, and therefore has no request body.** The
+        transition names the state it wants, so running it twice is not a second
+        withdrawal — it answers `200` with the request unchanged and writes
+        nothing.
+
+        Permitted while the request is still pending, whatever has happened to
+        the journey: withdrawing closes the caller's own asking, creates no
+        obligation and frees no seat.
+
+        **An accepted request cannot be withdrawn.** The driver agreed to give
+        that seat and has planned around it; nothing notifies them it went away,
+        so this phase refuses rather than pretends.
+      parameters:
+        - $ref: '#/components/parameters/SeatRequestId'
+      responses:
+        '200':
+          description: The asking, withdrawn.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MySeatRequestEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/SeatRequestConflict'
+
+  /api/v1/seat-requests/{requestId}/accept:
+    post:
+      operationId: acceptSeatRequest
+      tags: [Seat requests]
+      summary: Give somebody a seat
+      security:
+        - bearerAuth: []
+      description: |
+        The driver who published the journey agrees to share a seat.
+
+        **Naturally idempotent, and therefore has no request body.** Accepting an
+        already-accepted request answers `200` unchanged — and keeps doing so
+        after the journey is cancelled, after it departs, and after the remaining
+        seats are given away. The seat was given; a lost response does not
+        un-give it.
+
+        A **still pending** request is different: it can only be accepted while
+        the journey is running, and only while a seat remains. Accepted requests
+        never exceed the seats the driver offered.
+      parameters:
+        - $ref: '#/components/parameters/SeatRequestId'
+      responses:
+        '200':
+          description: The asking, accepted.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteSeatRequestEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/SeatRequestConflict'
+
+  /api/v1/seat-requests/{requestId}/decline:
+    post:
+      operationId: declineSeatRequest
+      tags: [Seat requests]
+      summary: Say no to an asking
+      security:
+        - bearerAuth: []
+      description: |
+        **Naturally idempotent, and therefore has no request body.** Declining an
+        already-declined request answers `200` unchanged.
+
+        Permitted after the journey was cancelled or has departed: declining
+        creates no obligation and frees no seat, and refusing it would leave
+        pending askings in the driver's list with nothing that can clear them.
+      parameters:
+        - $ref: '#/components/parameters/SeatRequestId'
+      responses:
+        '200':
+          description: The asking, declined.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteSeatRequestEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/SeatRequestConflict'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -755,6 +1030,23 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    SeatRequestConflict:
+      description: |
+        The asking cannot be applied to the current state.
+
+        `details.reason` says which state, as a stable machine string a client
+        maps to its own approved copy. `details.current_status` accompanies it
+        only where the caller already has the right to see that request —
+        their own asking, or one on a journey they published — and is absent
+        from `id_already_used`, where the row behind the id may be somebody
+        else's and its state is none of this caller's business.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     RateLimited:
       description: |
         Too many attempts. Applies per number and per address; the response does
@@ -780,6 +1072,14 @@ components:
             $ref: '#/components/schemas/Error'
 
   parameters:
+    SeatRequestId:
+      name: requestId
+      in: path
+      required: true
+      description: |
+        The seat request's identifier, as the client generated it when asking.
+      schema:
+        $ref: '#/components/schemas/SeatRequestId'
     RouteId:
       name: routeId
       in: path
@@ -929,8 +1229,22 @@ components:
             details:
               type: object
               description: |
-                Field-level failures. Present only for validation errors;
-                absent everywhere else, so its presence is meaningful.
+                Machine-readable detail. Present for validation errors and for
+                seat-request refusals; absent everywhere else, so its presence is
+                meaningful.
+
+                Field failures are keyed by field name with an array of
+                developer-facing messages. Two reserved keys carry a scalar
+                instead: `reason`, a stable discriminator for refusals a client
+                must handle differently, and `current_status`, the state of a
+                request the caller is already entitled to see. No field is ever
+                named `reason` or `current_status`, so the two shapes cannot
+                collide.
+              properties:
+                reason:
+                  $ref: '#/components/schemas/SeatRequestRefusalReason'
+                current_status:
+                  $ref: '#/components/schemas/SeatRequestStatus'
               additionalProperties:
                 type: array
                 items:
@@ -1489,6 +1803,268 @@ components:
         route:
           $ref: '#/components/schemas/Route'
 
+    SeatRequestId:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+      description: |
+        A UUID **version 7**, generated by the client before it asks.
+
+        Same contract as a route id and for the same reason: v7 is time-ordered,
+        so ids append to an index rather than scattering across it, and this id
+        is what makes asking safe to retry — the same id is the same asking.
+      examples:
+        - 01991d00-0000-7000-8000-0000000000a1
+
+    SeatRequestStatus:
+      type: string
+      enum: [pending, accepted, declined, withdrawn]
+      description: |
+        Where one asking stands. Only `pending` can still change.
+
+        There is no `expired`: a request on a journey that has departed is a
+        comparison against the clock, not stored state, and persisting it would
+        need a sweep to keep it true. There is no `cancelled_by_route` either —
+        when a driver withdraws a journey the request keeps saying what the
+        member asked and what answer they got, and the route's own `status` says
+        the rest.
+
+    SeatRequestRefusalReason:
+      type: string
+      enum:
+        - profile_required
+        - own_route
+        - recurring_route_unsupported
+        - id_already_used
+        - already_requested
+        - route_unavailable
+        - route_full
+        - already_accepted
+        - already_decided
+        - withdrawn
+      description: |
+        Why a seat-request command was refused, as a stable machine string.
+
+        **This is contract**: renaming one is a breaking change. Clients map each
+        to their own approved copy, because `message` is developer-facing English
+        that no client displays.
+
+        `profile_required` is the only one that arrives with `422` and
+        `validation_failed` — the journey is a valid target and the body is well
+        formed; what is missing is the caller's own prerequisite. Every other
+        reason arrives with `409` and `conflict`.
+
+        There is deliberately no reason for a cancelled or departed journey on
+        the create path: those are invisible to a passenger and answer `404`, so
+        a distinguishable refusal would confirm which ids exist.
+
+    SeatRequestCreate:
+      type: object
+      additionalProperties: false
+      required: [id]
+      description: |
+        One field. The journey is in the path, the passenger is the
+        authenticated caller, and the status is not the client's to choose.
+        Anything else is refused rather than ignored — a key the server silently
+        drops is a feature the client believes it is using.
+      properties:
+        id:
+          $ref: '#/components/schemas/SeatRequestId'
+
+    MySeatRequest:
+      type: object
+      additionalProperties: false
+      required: [id, status, requested_at, decided_at, withdrawn_at, route]
+      description: |
+        The caller's own asking, with the journey it is about.
+
+        `status` is history — what this member asked and what answer they got.
+        `route.status` and `route.departure_state` are the journey as it now
+        stands. Both travel together and neither is rewritten to agree with the
+        other.
+      properties:
+        id:
+          $ref: '#/components/schemas/SeatRequestId'
+        status:
+          $ref: '#/components/schemas/SeatRequestStatus'
+        requested_at:
+          type: string
+          format: date-time
+        decided_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          description: When it was accepted or declined; null until it is either.
+        withdrawn_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          description: When the passenger took it back; null unless they did.
+        route:
+          $ref: '#/components/schemas/MySeatRequestRoute'
+
+    MySeatRequestRoute:
+      type: object
+      additionalProperties: false
+      required:
+        [id, origin, destination, recurrence, departure_date, departure_time,
+         timezone, status, departure_state, seats_offered, rules, driver]
+      description: |
+        The journey an asking is about, as its passenger may see it.
+
+        What discovery publishes, plus `status` — which discovery has no
+        vocabulary for, because it only ever shows live journeys. Here it is
+        required: a member looking at their own history needs to know the
+        journey was withdrawn.
+
+        `seats_offered` keeps its meaning everywhere: what the driver offered,
+        never what remains. Nothing publishes remaining seats.
+      properties:
+        id:
+          $ref: '#/components/schemas/RouteId'
+        origin:
+          $ref: '#/components/schemas/Place'
+        destination:
+          $ref: '#/components/schemas/Place'
+        recurrence:
+          $ref: '#/components/schemas/Recurrence'
+        departure_date:
+          oneOf:
+            - $ref: '#/components/schemas/DepartureDate'
+            - type: 'null'
+        departure_time:
+          $ref: '#/components/schemas/DepartureTime'
+        timezone:
+          type: string
+          description: The IANA zone the departure is read in. Server-set.
+          examples:
+            - 'Europe/Istanbul'
+        status:
+          $ref: '#/components/schemas/RouteStatus'
+        departure_state:
+          $ref: '#/components/schemas/DepartureState'
+        seats_offered:
+          $ref: '#/components/schemas/SeatsOffered'
+        rules:
+          $ref: '#/components/schemas/RideRules'
+        driver:
+          $ref: '#/components/schemas/DiscoveredDriver'
+
+    MySeatRequestEnvelope:
+      type: object
+      additionalProperties: false
+      required: [seat_request]
+      properties:
+        seat_request:
+          $ref: '#/components/schemas/MySeatRequest'
+
+    MySeatRequestPage:
+      type: object
+      additionalProperties: false
+      required: [seat_requests, next_cursor]
+      description: |
+        One page of the caller's own askings, newest first.
+      properties:
+        seat_requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/MySeatRequest'
+        next_cursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+          description: |
+            Opaque, and belongs to this endpoint alone — one issued by another
+            list is refused. **Null means there is nothing behind this page**;
+            an empty page therefore always carries a null cursor.
+
+    RouteSeatRequest:
+      type: object
+      additionalProperties: false
+      required: [id, status, requested_at, decided_at, withdrawn_at, passenger]
+      description: |
+        One asking on a journey the caller published.
+
+        The journey is not repeated here: it is in the path and the caller owns
+        it.
+      properties:
+        id:
+          $ref: '#/components/schemas/SeatRequestId'
+        status:
+          $ref: '#/components/schemas/SeatRequestStatus'
+        requested_at:
+          type: string
+          format: date-time
+        decided_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        withdrawn_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        passenger:
+          $ref: '#/components/schemas/SeatRequestPassenger'
+
+    SeatRequestPassenger:
+      type: object
+      additionalProperties: false
+      required: [display_name, initials]
+      description: |
+        Who asked, in the two fields a profile has.
+
+        No id of any kind, no phone number, and no rating, verification, trip
+        count or trust score — the same projection discovery gives of a driver,
+        pointed the other way, and for the same reason.
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          examples:
+            - 'Ayşe Demir'
+        initials:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: |
+            Derived by the server from the display name. Turkish casing makes
+            this a rule rather than a formatting detail, so one authority
+            computes it and every client renders what it is given.
+          examples:
+            - 'AD'
+
+    RouteSeatRequestEnvelope:
+      type: object
+      additionalProperties: false
+      required: [seat_request]
+      properties:
+        seat_request:
+          $ref: '#/components/schemas/RouteSeatRequest'
+
+    RouteSeatRequestPage:
+      type: object
+      additionalProperties: false
+      required: [seat_requests, next_cursor]
+      description: |
+        One page of askings on a journey the caller published, newest first.
+      properties:
+        seat_requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteSeatRequest'
+        next_cursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+          description: |
+            Opaque, and belongs to this endpoint alone. Null means there is
+            nothing behind this page.
+
     DiscoveryPage:
       type: object
       additionalProperties: false
@@ -1513,7 +2089,8 @@ components:
       additionalProperties: false
       required:
         [id, origin, destination, recurrence, departure_date, departure_time,
-         timezone, departure_state, seats_offered, rules, driver]
+         timezone, departure_state, seats_offered, rules, driver,
+         my_seat_request]
       description: |
         A published journey as another member sees it.
 
@@ -1552,6 +2129,35 @@ components:
           $ref: '#/components/schemas/RideRules'
         driver:
           $ref: '#/components/schemas/DiscoveredDriver'
+        my_seat_request:
+          oneOf:
+            - $ref: '#/components/schemas/MySeatRequestSummary'
+            - type: 'null'
+          description: |
+            **The caller's own** seat request on this journey, or null if they
+            have not asked.
+
+            Never anybody else's, and never a count: this is the one piece of
+            per-viewer state on an otherwise identical projection, and it is here
+            so a client can render the truth after a restart rather than offering
+            to ask again and learning otherwise from a `409`.
+
+            At most one exists — a member may create one seat request per journey
+            for that journey's lifetime — so a terminal status here never becomes
+            requestable again.
+
+    MySeatRequestSummary:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      description: |
+        The smallest useful reference to the caller's own asking: enough to say
+        what state it is in and to address it, and nothing more.
+      properties:
+        id:
+          $ref: '#/components/schemas/SeatRequestId'
+        status:
+          $ref: '#/components/schemas/SeatRequestStatus'
 
     DiscoveredDriver:
       type: object
