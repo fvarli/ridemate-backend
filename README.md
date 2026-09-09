@@ -12,31 +12,39 @@ The Flutter client lives in a separate repository and develops against
 
 ## Status
 
-**Phase 9 — identity and authentication.**
+**Phase 12 — discovery.**
 
 This service boots, connects to PostgreSQL, enables PostGIS, reports liveness and
 readiness, answers every error in one documented shape, carries a correlation id through
-its logs, is held to a hand-written OpenAPI contract by its own tests — and now
-authenticates members by phone number.
+its logs, and is held to a hand-written OpenAPI contract by its own tests. It authenticates
+members by phone number (Phase 9), publishes journeys (Phase 10), holds the name another
+member is shown (Phase 11), and answers a search for somebody else's journey (Phase 12).
 
-Five endpoints exist and nothing else does:
+Twelve endpoints exist and nothing else does:
 
 ```
-POST /api/v1/auth/otp          request a passcode
-POST /api/v1/auth/otp/verify   exchange it for a session
-POST /api/v1/auth/refresh      rotate the credential pair
-POST /api/v1/auth/logout       end the session
-GET  /api/v1/me                the caller's own account
+POST /api/v1/auth/otp             request a passcode
+POST /api/v1/auth/otp/verify      exchange it for a session
+POST /api/v1/auth/refresh         rotate the credential pair
+POST /api/v1/auth/logout          end the session
+GET  /api/v1/me                   the caller's own account
+GET  /api/v1/me/profile           the caller's own profile
+PUT  /api/v1/me/profile           set the display name
+GET  /api/v1/places               the endpoint catalogue
+POST /api/v1/routes               publish a journey
+GET  /api/v1/routes/discover      find somebody else's, between two endpoints
+GET  /api/v1/me/routes            the caller's own journeys
+POST /api/v1/routes/{id}/cancel   withdraw one
 ```
 
 Registration and sign-in are the same call, deliberately: a verified number either belongs
 to an account or does not, and the server decides which — so asking cannot reveal who is
 already a member.
 
-Six tables: `accounts`, `auth_sessions`, `auth_tokens`, `otp_challenges`, and Laravel's
-`cache` and `cache_locks`. A test asserts that list exactly. **No** profiles, verification
-records, consents, trips, routes or messages — see `docs/architecture.md` for what each
-absence is waiting on.
+Nine tables: `accounts`, `auth_sessions`, `auth_tokens`, `otp_challenges`, `profiles`,
+`places`, `routes`, and Laravel's `cache` and `cache_locks`. A test asserts that list
+exactly. **No** verification records, consents, trips, seat requests or messages — see
+`docs/architecture.md` for what each absence is waiting on.
 
 **Production sign-in is not operational until an SMS adapter is configured.** The default
 passcode sender refuses rather than discarding, so a deployment without one fails loudly

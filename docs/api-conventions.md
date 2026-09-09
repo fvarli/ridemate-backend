@@ -98,9 +98,15 @@ shape every later one follows:
   not merely encoded: a base64 of the sort key would make the word false the moment somebody
   looked.
 * **A cursor is a position, not a capability.** It carries no account id, and the query it
-  resumes is owner-scoped anyway, so presenting someone else's cursor grants nothing.
-* An unusable cursor — tampered, wrong version, wrong shape — is `422 validation_failed` on
-  the `cursor` field, never a `500`, and the message says only that it is not usable.
+  resumes is re-authorized on every request — scoped to the caller where the feed is theirs,
+  and filtered for eligibility where it is public — so presenting someone else's cursor
+  grants nothing.
+* **The version tag names the surface, not just the format.** Two feeds that order by the
+  same tuple would otherwise accept each other's cursors and resume from a position
+  established somewhere else. A cursor from the wrong surface is refused rather than decoded.
+* An unusable cursor — tampered, wrong version, wrong surface, wrong shape — is
+  `422 validation_failed` on the `cursor` field, never a `500`, and the message says only
+  that it is not usable.
   Describing *why* would describe the format.
 * `limit` is bounded by the contract, with a documented default, and the server may return
   fewer than asked.
