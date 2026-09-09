@@ -4,10 +4,8 @@ declare(strict_types=1);
 
 namespace App\Routes;
 
+use App\Support\KeysetCursor;
 use Carbon\CarbonImmutable;
-use Illuminate\Contracts\Encryption\DecryptException;
-use Illuminate\Support\Facades\Crypt;
-use Illuminate\Support\Str;
 
 /**
  * A position in a keyset-paginated list of routes.
@@ -43,25 +41,12 @@ use Illuminate\Support\Str;
 final readonly class RouteCursor
 {
     /**
-     * Bumped when the tuple changes. An old cursor then fails cleanly instead
-     * of being reinterpreted under new rules.
+     * My Routes pages a member's own journeys.
      */
     public const MY_ROUTES = 'rm.myroutes.v1';
 
     /** Discovery pages the same tuple over a different set of rows. */
     public const DISCOVERY = 'rm.discovery.v1';
-
-    private const SEPARATOR = '|';
-
-    /**
-     * Microseconds included on purpose.
-     *
-     * Two routes published in the same second are ordered by their id, but two
-     * published in the same MICROSECOND would be ambiguous if the cursor stored
-     * anything coarser — the resume point would sit between rows and one of
-     * them would be skipped.
-     */
-    private const INSTANT_FORMAT = 'Y-m-d\TH:i:s.uP';
 
     public function __construct(
         public CarbonImmutable $createdAt,
@@ -71,47 +56,21 @@ final readonly class RouteCursor
 
     public function encode(): string
     {
-        return Crypt::encryptString(implode(self::SEPARATOR, [
-            $this->version,
-            $this->createdAt->format(self::INSTANT_FORMAT),
-            $this->id,
-        ]));
+        return $this->cursor()->encode();
     }
 
-    /**
-     * The position a cursor names, or null if it does not name one.
-     *
-     * Null covers every way this can go wrong — tampered, truncated, encrypted
-     * under a different key, issued by another version of this format, or
-     * simply not a cursor. The caller turns that into a validation failure,
-     * because a bad cursor is a bad request and not a server fault.
-     */
+    /** Null for anything unusable — see `App\Support\KeysetCursor`. */
     public static function decode(string $cursor, string $version = self::MY_ROUTES): ?self
     {
-        try {
-            $plain = Crypt::decryptString($cursor);
-        } catch (DecryptException) {
-            return null;
-        }
+        $decoded = KeysetCursor::decode($cursor, $version);
 
-        $parts = explode(self::SEPARATOR, $plain);
+        return $decoded instanceof KeysetCursor
+            ? new self($decoded->createdAt, $decoded->id, $decoded->version)
+            : null;
+    }
 
-        if (count($parts) !== 3 || $parts[0] !== $version) {
-            return null;
-        }
-
-        [, $instant, $id] = $parts;
-
-        if (! Str::isUuid($id)) {
-            return null;
-        }
-
-        $createdAt = CarbonImmutable::createFromFormat(self::INSTANT_FORMAT, $instant);
-
-        if (! $createdAt instanceof CarbonImmutable) {
-            return null;
-        }
-
-        return new self($createdAt, $id, $version);
+    private function cursor(): KeysetCursor
+    {
+        return new KeysetCursor($this->createdAt, $this->id, $this->version);
     }
 }
