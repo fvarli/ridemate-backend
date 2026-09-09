@@ -19,8 +19,9 @@ use Tests\TestCase;
  *
  * The point is not to inventory the database. It is that adding a table
  * requires editing an explicit list, so speculative schema cannot arrive
- * quietly alongside a feature. Every table below was argued for in the Phase 9
- * plan; a seventh appearing here without one is the failure this catches.
+ * quietly alongside a feature. Every table below was argued for in the phase
+ * that added it; one appearing here without an argument is the failure this
+ * catches.
  *
  * The rejected list is kept for the same reason it was kept in Phase 8:
  * naming what is deliberately absent is stronger than a bare equality
@@ -49,6 +50,7 @@ final class SchemaAllowlistTest extends TestCase
         'places',
         'profiles',
         'routes',
+        'seat_requests',
         'spatial_ref_sys',
     ];
 
@@ -88,8 +90,11 @@ final class SchemaAllowlistTest extends TestCase
             // Deferred: no ops surface reads them, and the auth tables carry
             // their own timestamps.
             'audit_events', 'idempotency_records',
-            // Product domain, later phases.
-            'vehicles', 'route_occurrences', 'seat_requests', 'trips',
+            // Product domain, later phases. `seat_requests` left this list in
+            // Phase 13, which built the asking. `route_occurrences` did not:
+            // Phase 13 v1 accepts requests on one-off routes only, so nothing
+            // per-day reads an occurrence yet.
+            'vehicles', 'route_occurrences', 'trips',
             'conversations', 'messages', 'reviews', 'trusted_contacts',
             'safety_incidents', 'blocks', 'reports', 'notifications',
             // Deferred: nothing is queued, so nothing needs a queue table.
