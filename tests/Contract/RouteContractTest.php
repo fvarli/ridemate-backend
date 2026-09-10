@@ -379,6 +379,70 @@ final class RouteContractTest extends TestCase
 
     // ------------------------------------------------------ the response shape
 
+    /**
+     * A route as its owner sees it in their own list.
+     *
+     * @return array<string, mixed>
+     */
+    private function myRoute(): array
+    {
+        return $this->route() + [
+            'trip' => [
+                'state' => 'not_started',
+                'started_at' => null,
+                'completed_at' => null,
+                'aborted_at' => null,
+            ],
+        ];
+    }
+
+    /**
+     * `MyRoute` is `Route` plus the trip lifecycle, and stays that way.
+     *
+     * The two are spelled out separately because every object here closes with
+     * `additionalProperties: false`, and under `allOf` each branch validates
+     * alone — a closed base rejects the field the second branch adds. That
+     * duplication is safe only while something checks it, which is this: a
+     * field added to `Route` and not to `MyRoute` fails here rather than
+     * quietly leaving the owner's own list behind.
+     */
+    public function test_my_route_is_route_plus_the_trip_lifecycle(): void
+    {
+        /** @var array<string, mixed> $schemas */
+        $schemas = self::contractDocument()['components']['schemas'];
+
+        /** @var array{properties: array<string, mixed>, required: list<string>} $route */
+        $route = $schemas['Route'];
+        /** @var array{properties: array<string, mixed>, required: list<string>, additionalProperties?: bool} $mine */
+        $mine = $schemas['MyRoute'];
+
+        $expectedProperties = array_keys($route['properties']);
+        $expectedProperties[] = 'trip';
+        sort($expectedProperties);
+
+        $actualProperties = array_keys($mine['properties']);
+        sort($actualProperties);
+
+        self::assertSame($expectedProperties, $actualProperties);
+
+        $expectedRequired = $route['required'];
+        $expectedRequired[] = 'trip';
+        sort($expectedRequired);
+
+        $actualRequired = $mine['required'];
+        sort($actualRequired);
+
+        self::assertSame($expectedRequired, $actualRequired);
+
+        // Closed, like everything else.
+        self::assertFalse($mine['additionalProperties'] ?? true);
+
+        // And the base stays free of it: publishing and cancelling answer with
+        // `Route`, which Phase 14 did not widen.
+        self::assertArrayNotHasKey('trip', $route['properties']);
+        self::assertNotContains('trip', $route['required']);
+    }
+
     public function test_a_published_route_validates(): void
     {
         $this->assertValidates($this->route(), 'Route');
@@ -413,7 +477,9 @@ final class RouteContractTest extends TestCase
     public function test_a_page_ends_with_a_null_cursor(): void
     {
         $this->assertValidates(
-            ['routes' => [$this->route()], 'next_cursor' => null],
+            // A page row is `MyRoute`: the owner's own list is one of the two
+            // surfaces carrying the trip lifecycle, and `Route` itself is not.
+            ['routes' => [$this->myRoute()], 'next_cursor' => null],
             'RoutePage',
         );
 

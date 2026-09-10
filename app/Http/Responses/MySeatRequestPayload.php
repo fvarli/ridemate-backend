@@ -6,6 +6,7 @@ namespace App\Http\Responses;
 
 use App\SeatRequests\OwnSeatRequest;
 use App\SeatRequests\SeatRequestPage;
+use App\Trips\TripLifecycle;
 
 /**
  * What a member sees of their own asking.
@@ -96,6 +97,12 @@ final class MySeatRequestPayload
                     'display_name' => $own->driver->display_name,
                     'initials' => $own->driver->initials(),
                 ],
+                // A fourth independent fact, beside the request's own status,
+                // the route's status and its departure state. A member may
+                // hold an accepted request on a published journey that is
+                // under way, or on one that was cancelled before it began, and
+                // both are said plainly rather than reconciled.
+                'trip' => TripPayload::from(TripLifecycle::of($route->trip)),
             ],
         ];
     }

@@ -1792,6 +1792,81 @@ components:
               format: date-time
             - type: 'null'
 
+    MyRoute:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - origin
+        - destination
+        - recurrence
+        - departure_time
+        - timezone
+        - departure_state
+        - seats_offered
+        - rules
+        - status
+        - published_at
+        - trip
+      description: |
+        A journey as its own driver sees it, in `GET /api/v1/me/routes`.
+
+        Every field `Route` publishes, plus whether the journey was actually
+        made. The lifecycle appears here and on a member's own seat requests,
+        and nowhere else: publishing and cancelling answer with the plain
+        `Route`, and the public feed carries none of it.
+
+        Spelled out rather than composed with `allOf`: every object in this
+        document closes with `additionalProperties: false`, and under `allOf`
+        each branch is validated alone, so a closed base rejects the very
+        field the second branch adds. A contract test asserts this schema is
+        `Route` plus `trip` exactly, so the two cannot drift apart.
+      properties:
+        id:
+          $ref: '#/components/schemas/RouteId'
+        origin:
+          $ref: '#/components/schemas/Place'
+        destination:
+          $ref: '#/components/schemas/Place'
+        recurrence:
+          $ref: '#/components/schemas/Recurrence'
+        departure_date:
+          description: |
+            The day a one-off journey happens. `null` for a weekday commute,
+            which has no single date.
+          oneOf:
+            - $ref: '#/components/schemas/DepartureDate'
+            - type: 'null'
+        departure_time:
+          $ref: '#/components/schemas/DepartureTime'
+        timezone:
+          type: string
+          description: |
+            The IANA zone the departure is read in, recorded when the journey
+            was published. Server-owned: it never appears in a request.
+          examples:
+            - Europe/Istanbul
+        departure_state:
+          $ref: '#/components/schemas/DepartureState'
+        seats_offered:
+          $ref: '#/components/schemas/SeatsOffered'
+        rules:
+          $ref: '#/components/schemas/RideRules'
+        status:
+          $ref: '#/components/schemas/RouteStatus'
+        published_at:
+          type: string
+          format: date-time
+        cancelled_at:
+          description: When the journey was withdrawn; `null` while it stands.
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+
+        trip:
+          $ref: '#/components/schemas/Trip'
+
     RouteEnvelope:
       type: object
       additionalProperties: false
@@ -1802,6 +1877,59 @@ components:
       properties:
         route:
           $ref: '#/components/schemas/Route'
+
+    Trip:
+      type: object
+      additionalProperties: false
+      required: [state, started_at, completed_at, aborted_at]
+      description: |
+        Whether a published journey was actually made.
+
+        A third truth beside the route's `status` and its `departure_state`, and
+        independent of both: a published journey can be `completed`, and a
+        cancelled one was never begun. It is also independent of any seat
+        request — a trip ending answers nobody's asking.
+
+        **Always present on the surfaces that publish it**, including for a
+        journey nobody has started, so a client never has to read absence.
+
+        `state` means exactly what was recorded and nothing more.
+        `in_progress` says an authorized driver pressed Start and the server
+        accepted it — not that they are at the origin, that anything is moving,
+        that anybody boarded, or that any location is known. `completed` and
+        `aborted` say the driver reported the journey made or abandoned; no
+        reason is stored for the latter, because no reason taxonomy has been
+        designed.
+
+        There is no trip identifier: a route has at most one, and the endpoints
+        that act on it are route-scoped. There are no `can_*` fields either —
+        this is what happened, not what a client may do about it.
+      properties:
+        state:
+          type: string
+          enum: [not_started, in_progress, completed, aborted]
+          description: |
+            `not_started` is the absence of a trip rather than a stored state:
+            nothing writes it, because keeping it true for every published
+            journey would need a row for each one.
+        started_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          description: |
+            When the driver started it — not when it was scheduled to leave.
+            Null while `not_started`.
+        completed_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        aborted_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
 
     SeatRequestId:
       type: string
@@ -1910,7 +2038,7 @@ components:
       additionalProperties: false
       required:
         [id, origin, destination, recurrence, departure_date, departure_time,
-         timezone, status, departure_state, seats_offered, rules, driver]
+         timezone, status, departure_state, seats_offered, rules, driver, trip]
       description: |
         The journey an asking is about, as its passenger may see it.
 
@@ -1951,6 +2079,8 @@ components:
           $ref: '#/components/schemas/RideRules'
         driver:
           $ref: '#/components/schemas/DiscoveredDriver'
+        trip:
+          $ref: '#/components/schemas/Trip'
 
     MySeatRequestEnvelope:
       type: object
@@ -2194,11 +2324,14 @@ components:
       required: [routes, next_cursor]
       description: |
         A page of routes, newest first.
+
+        The rows carry the trip lifecycle: this is the owner's own list, and it
+        is one of the two surfaces that publishes it.
       properties:
         routes:
           type: array
           items:
-            $ref: '#/components/schemas/Route'
+            $ref: '#/components/schemas/MyRoute'
         next_cursor:
           oneOf:
             - type: string

@@ -6,7 +6,7 @@ namespace App\Http\Controllers\Api\V1\Routes;
 
 use App\Auth\AuthContext;
 use App\Http\Requests\ListMyRoutesRequest;
-use App\Http\Responses\RoutePayload;
+use App\Http\Responses\MyRoutePayload;
 use App\Models\Route;
 use App\Routes\RouteCursor;
 use Illuminate\Http\JsonResponse;
@@ -44,7 +44,10 @@ final class ListMyRoutesController
         $cursor = $request->cursor();
 
         $query = Route::query()
-            ->with(['originPlace', 'destinationPlace'])
+            // `trip` is eager-loaded with the rest: without it every row would
+            // fetch its own lifecycle during serialization, and a page would
+            // cost a query per journey.
+            ->with(['originPlace', 'destinationPlace', 'trip'])
             ->where('account_id', $member->id)
             ->orderByDesc('created_at')
             ->orderByDesc('id');
@@ -66,7 +69,7 @@ final class ListMyRoutesController
 
         $payload = [];
         foreach ($page as $route) {
-            $payload[] = RoutePayload::from($route);
+            $payload[] = MyRoutePayload::from($route);
         }
 
         $last = $page->last();

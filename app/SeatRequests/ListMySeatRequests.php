@@ -51,6 +51,9 @@ final class ListMySeatRequests
                 'route.originPlace',
                 'route.destinationPlace',
                 'route.account.profile',
+                // Same reason as the places and the profile: without it every
+                // row would fetch its journey's lifecycle one at a time.
+                'route.trip',
             ])
             ->where('account_id', $passenger->id)
             ->orderByDesc('created_at')
