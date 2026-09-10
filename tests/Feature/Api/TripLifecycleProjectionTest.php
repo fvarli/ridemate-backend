@@ -483,8 +483,12 @@ final class TripLifecycleProjectionTest extends TestCase
     }
 
     /**
-     * The account behind a credential, for the domain commands B5 has not
-     * exposed over HTTP yet.
+     * The account behind a credential.
+     *
+     * These fixtures drive the commands directly rather than through the
+     * endpoints, so that what this file proves — which surfaces publish the
+     * lifecycle — does not depend on how the lifecycle is set. The endpoints
+     * have their own tests in TripCommandEndpointTest.
      *
      * @param  array<string, string>  $headers
      */

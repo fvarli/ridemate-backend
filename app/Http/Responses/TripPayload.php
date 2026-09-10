@@ -47,4 +47,18 @@ final class TripPayload
             'aborted_at' => $lifecycle->abortedAt?->toIso8601ZuluString(),
         ];
     }
+
+    /**
+     * The whole body of a lifecycle command's response.
+     *
+     * Nothing else accompanies it. The commands are route-scoped and the caller
+     * already holds the route, so returning the journey alongside would be a
+     * second copy of something they have — and a second place it could disagree.
+     *
+     * @return array{trip: array<string, mixed>}
+     */
+    public static function envelope(TripLifecycle $lifecycle): array
+    {
+        return ['trip' => self::from($lifecycle)];
+    }
 }

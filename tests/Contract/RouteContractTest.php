@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Contract;
 
+use App\Trips\RefusalReason;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\AssertionFailedError;
@@ -517,6 +518,7 @@ final class RouteContractTest extends TestCase
         foreach ([
             'Place', 'PlaceCatalogue', 'RideRules', 'RoutePublication',
             'Route', 'RouteEnvelope', 'RoutePage',
+            'MyRoute', 'Trip', 'TripEnvelope',
         ] as $name) {
             self::assertFalse(
                 $schemas[$name]['additionalProperties'] ?? null,
@@ -538,5 +540,178 @@ final class RouteContractTest extends TestCase
         self::assertStringContainsString('Opaque', $description);
         self::assertStringNotContainsString('created_at', $description);
         self::assertStringNotContainsString('base64', $description);
+    }
+
+    // ---------------------------------------------------- the trip commands
+
+    /**
+     * @return array{trip: array<string, string|null>}
+     */
+    private function tripEnvelope(string $state = 'in_progress'): array
+    {
+        return ['trip' => [
+            'state' => $state,
+            'started_at' => '2026-09-11T07:05:00Z',
+            'completed_at' => null,
+            'aborted_at' => null,
+        ]];
+    }
+
+    /**
+     * Start is the only lifecycle command that creates anything.
+     *
+     * Completing and abandoning act on a trip that already exists and name the
+     * state it should end in, so a `201` from either would be announcing a
+     * second resource that never appeared.
+     */
+    public function test_only_starting_documents_a_created_response(): void
+    {
+        /** @var array<string, array<string, mixed>> $paths */
+        $paths = self::contractDocument()['paths'];
+
+        self::assertSame(
+            [201, 200, 401, 403, 404, 409],
+            array_keys($paths['/api/v1/routes/{routeId}/trip/start']['post']['responses']),
+        );
+
+        foreach (['complete', 'abort'] as $command) {
+            self::assertSame(
+                [200, 401, 403, 404, 409],
+                array_keys($paths["/api/v1/routes/{routeId}/trip/$command"]['post']['responses']),
+                "$command should not document a created response",
+            );
+        }
+    }
+
+    /**
+     * All three are bodyless, for the reason cancellation is.
+     */
+    public function test_no_trip_command_takes_a_request_body(): void
+    {
+        /** @var array<string, array<string, mixed>> $paths */
+        $paths = self::contractDocument()['paths'];
+
+        foreach (['start', 'complete', 'abort'] as $command) {
+            $operation = $paths["/api/v1/routes/{routeId}/trip/$command"]['post'];
+
+            self::assertArrayNotHasKey('requestBody', $operation, "$command takes a body");
+            self::assertSame(
+                [['$ref' => '#/components/parameters/RouteId']],
+                $operation['parameters'],
+                "$command takes a parameter beyond the route it acts on",
+            );
+        }
+    }
+
+    /**
+     * CARRIES WEIGHT. The published vocabulary is the domain's, exactly.
+     *
+     * Clients map each string to their own approved copy, so a reason that
+     * exists in PHP but not here is one the client cannot translate — it would
+     * surface as an untranslated fallback. Written in the shape of
+     * ContractTest::test_every_error_code_the_service_can_emit_is_documented,
+     * which guards the top-level codes the same way.
+     */
+    public function test_the_trip_refusal_vocabulary_is_exactly_the_domains(): void
+    {
+        /** @var list<string> $documented */
+        $documented = self::contractDocument()['components']['schemas']['TripRefusalReason']['enum'];
+
+        $emitted = array_map(
+            static fn (RefusalReason $reason): string => $reason->value,
+            RefusalReason::cases(),
+        );
+
+        sort($documented);
+        sort($emitted);
+
+        self::assertSame(
+            $documented,
+            $emitted,
+            'openapi.yaml and App\Trips\RefusalReason disagree about the set of refusal reasons',
+        );
+    }
+
+    /**
+     * The two vocabularies overlap on purpose, and stay separate anyway.
+     *
+     * `recurring_route_unsupported` and `route_unavailable` mean the same thing
+     * in both domains and therefore carry the same wire string. That overlap is
+     * exactly why `Error.details.reason` is `anyOf` and not `oneOf`: a value in
+     * both branches matches twice, which `oneOf` rejects. This asserts the
+     * overlap is real, so the choice cannot be undone as a tidy-up.
+     */
+    public function test_the_shared_reasons_are_documented_by_both_domains(): void
+    {
+        /** @var array<string, array<string, mixed>> $schemas */
+        $schemas = self::contractDocument()['components']['schemas'];
+
+        /** @var list<string> $trip */
+        $trip = $schemas['TripRefusalReason']['enum'];
+        /** @var list<string> $seat */
+        $seat = $schemas['SeatRequestRefusalReason']['enum'];
+
+        self::assertSame(
+            ['recurring_route_unsupported', 'route_unavailable'],
+            array_values(array_intersect($trip, $seat)),
+        );
+
+        /** @var array<string, mixed> $reason */
+        $reason = $schemas['Error']['properties']['error']['properties']['details']['properties']['reason'];
+
+        self::assertArrayHasKey('anyOf', $reason);
+        self::assertArrayNotHasKey('oneOf', $reason);
+        self::assertSame([
+            ['$ref' => '#/components/schemas/SeatRequestRefusalReason'],
+            ['$ref' => '#/components/schemas/TripRefusalReason'],
+        ], $reason['anyOf']);
+    }
+
+    /**
+     * A trip refusal validates against the shared envelope, and a made-up one
+     * does not — which is the half that matters.
+     */
+    public function test_the_error_schema_admits_a_trip_reason_and_no_invented_one(): void
+    {
+        $this->assertValidates([
+            'error' => [
+                'code' => 'conflict',
+                'message' => 'That journey has not been started.',
+                'details' => ['reason' => 'trip_not_started'],
+                'request_id' => '00000000-0000-7000-8000-000000000001',
+            ],
+        ], 'Error');
+
+        $this->assertRejects([
+            'error' => [
+                'code' => 'conflict',
+                'message' => 'That journey was already started.',
+                'details' => ['reason' => 'trip_already_started'],
+                'request_id' => '00000000-0000-7000-8000-000000000001',
+            ],
+        ], 'Error', 'the Error schema accepted a refusal reason neither domain names');
+    }
+
+    public function test_the_trip_envelope_carries_the_lifecycle_and_nothing_else(): void
+    {
+        $this->assertValidates($this->tripEnvelope(), 'TripEnvelope');
+
+        // No identifier. A route has at most one trip and the commands are
+        // route-scoped, so an id would be a field nobody needs and somebody
+        // eventually depends on.
+        $withId = $this->tripEnvelope();
+        $withId['trip']['id'] = '00000000-0000-7000-8000-000000000001';
+        $this->assertRejects($withId, 'TripEnvelope', 'the trip envelope accepted an identifier');
+
+        // No policy field either. What a client may do is what the server
+        // answers when it tries.
+        $withPolicy = $this->tripEnvelope();
+        $withPolicy['trip']['can_complete'] = true;
+        $this->assertRejects($withPolicy, 'TripEnvelope', 'the trip envelope accepted a policy field');
+
+        // And nothing rides alongside the trip.
+        $withRoute = $this->tripEnvelope();
+        $withRoute['route'] = $this->route();
+        $this->assertRejects($withRoute, 'TripEnvelope', 'the trip envelope accepted a companion object');
     }
 }

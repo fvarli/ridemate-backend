@@ -671,6 +671,167 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
+  /api/v1/routes/{routeId}/trip/start:
+    post:
+      operationId: startTrip
+      tags: [Trips]
+      summary: Say the journey is under way
+      security:
+        - bearerAuth: []
+      description: |
+        The driver who published the journey says it is happening.
+
+        **Naturally idempotent, and therefore has no request body.** A route has
+        at most one trip, so the route is the idempotency key and no client
+        `Idempotency-Key` exists: a retry after a lost response is the same start
+        observed again, and answers `200` with `started_at` exactly where it was.
+
+        - **201** — the trip was created. This is the only lifecycle command that
+          creates anything.
+        - **200** — the journey was already under way. Nothing was written.
+        - **409** — `recurring_route_unsupported` for a weekday plan, which has
+          no single departure to make; `departure_not_reached` before the
+          scheduled time in the route's own timezone, with no grace window;
+          `route_unavailable` for a journey that was withdrawn; and
+          `already_completed` or `already_aborted` where the journey has already
+          ended, because that is a different claim rather than a repeat.
+        - **404** — the route is not the caller's. A member cannot learn that
+          somebody else's journey exists by trying to start it.
+
+        A journey with no accepted passengers can still be started. The driver is
+        making it either way, and an empty car is not a reason to refuse.
+
+        **`in_progress` means this command was accepted and nothing else.** Not
+        that the driver is at the origin, that anything is moving, that anybody
+        boarded, or that any location is known. There are no coordinates in this
+        API.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+      responses:
+        '201':
+          description: The journey is under way.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripEnvelope'
+        '200':
+          description: |
+            The same start, already recorded. A retry of one that landed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TripConflict'
+
+  /api/v1/routes/{routeId}/trip/complete:
+    post:
+      operationId: completeTrip
+      tags: [Trips]
+      summary: Say the journey was made
+      security:
+        - bearerAuth: []
+      description: |
+        **Naturally idempotent, and therefore has no request body.** The
+        transition names the state it wants, so running it twice answers `200`
+        with `completed_at` unmoved and writes nothing.
+
+        **`200` and never `201`.** Nothing is created — the trip already exists,
+        and a second resource did not appear.
+
+        Whether the journey was eligible to start is not asked again. Recurrence,
+        publication state and the departure instant were answered when it began;
+        re-checking them here would let a journey that is demonstrably under way
+        become impossible to finish because its route changed afterwards, and a
+        driver stuck with a permanently running trip has no honest way out.
+
+        - **409** — `trip_not_started` where nobody started one, and
+          `already_aborted` where the driver already said it did not happen.
+          Overwriting that would be rewriting the record rather than repeating a
+          command.
+        - **404** — the route is not the caller's.
+
+        **`completed` means the driver said the journey was made.** Not that
+        anybody boarded, that anywhere was reached, that anything is owed, or
+        that anybody may now be reviewed. Accepted seat requests are untouched: a
+        journey ending is not an answer to anybody's asking.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+      responses:
+        '200':
+          description: The journey is recorded as made, or was already.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TripConflict'
+
+  /api/v1/routes/{routeId}/trip/abort:
+    post:
+      operationId: abortTrip
+      tags: [Trips]
+      summary: Say the journey was abandoned
+      security:
+        - bearerAuth: []
+      description: |
+        **Naturally idempotent, and therefore has no request body.** A repeat
+        answers `200` with `aborted_at` unmoved.
+
+        **No reason is accepted or stored.** A taxonomy of why a journey was
+        abandoned is a design nobody has made, and a free-text field would be
+        somewhere a member could write anything about somebody else.
+
+        Mirrors completion exactly, including that eligibility is not re-checked:
+        - **409** — `trip_not_started`, and `already_completed` where the driver
+          already said the journey was made.
+        - **404** — the route is not the caller's.
+
+        Seat requests are untouched. Nothing is cancelled, nobody is notified,
+        and no obligation is created or released — this phase has no
+        notifications.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+      responses:
+        '200':
+          description: The journey is recorded as abandoned, or was already.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TripConflict'
+
   /api/v1/routes/{routeId}/seat-requests:
     post:
       operationId: requestSeat
@@ -1047,6 +1208,23 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    TripConflict:
+      description: |
+        The journey is not in the state the command needed.
+
+        `details.reason` says which, as a stable machine string a client maps to
+        its own approved copy. No `details.current_status` accompanies it: the
+        caller owns this journey and can read its lifecycle from My Routes, so
+        naming the state twice would be a second thing to keep in agreement.
+
+        Which reasons each command can answer with is under the operation.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     RateLimited:
       description: |
         Too many attempts. Applies per number and per address; the response does
@@ -1230,8 +1408,9 @@ components:
               type: object
               description: |
                 Machine-readable detail. Present for validation errors and for
-                seat-request refusals; absent everywhere else, so its presence is
-                meaningful.
+                the refusals that carry a `reason` — seat-request commands and
+                trip lifecycle commands; absent everywhere else, so its presence
+                is meaningful.
 
                 Field failures are keyed by field name with an array of
                 developer-facing messages. Two reserved keys carry a scalar
@@ -1242,7 +1421,18 @@ components:
                 collide.
               properties:
                 reason:
-                  $ref: '#/components/schemas/SeatRequestRefusalReason'
+                  description: |
+                    Whichever domain refused. The two vocabularies are separate
+                    schemas rather than one merged enum, because neither domain
+                    should gain a say in the other's reasons — and `anyOf`
+                    rather than `oneOf`, because `recurring_route_unsupported`
+                    and `route_unavailable` are deliberately members of both.
+                    The same wire string for the same meaning is what keeps a
+                    client's mapping simple; `oneOf` would reject exactly those
+                    two for matching twice.
+                  anyOf:
+                    - $ref: '#/components/schemas/SeatRequestRefusalReason'
+                    - $ref: '#/components/schemas/TripRefusalReason'
                 current_status:
                   $ref: '#/components/schemas/SeatRequestStatus'
               additionalProperties:
@@ -1930,6 +2120,54 @@ components:
             - type: string
               format: date-time
             - type: 'null'
+
+    TripEnvelope:
+      type: object
+      additionalProperties: false
+      required: [trip]
+      description: |
+        The whole body of a trip lifecycle command's response.
+
+        The journey itself does not accompany it. The commands are route-scoped,
+        so the caller already holds the route they named — returning a copy would
+        be a second place the same facts could disagree.
+      properties:
+        trip:
+          $ref: '#/components/schemas/Trip'
+
+    TripRefusalReason:
+      type: string
+      enum:
+        - recurring_route_unsupported
+        - departure_not_reached
+        - route_unavailable
+        - trip_not_started
+        - already_completed
+        - already_aborted
+      description: |
+        Why a trip lifecycle command was refused, as a stable machine string.
+
+        **This is contract**: renaming one is a breaking change. Clients map each
+        to their own approved copy, because `message` is developer-facing English
+        that no client displays. Every one of these arrives with `409` and
+        `conflict` — a trip refusal is always the resource not being in the state
+        the command needed, never a malformed request. `departure_not_reached` in
+        particular is authoritative mutable state and not a validation failure:
+        the same request succeeds later, unchanged.
+
+        Two of these strings are also `SeatRequestRefusalReason` members, and
+        that is deliberate — the same meaning deserves the same wire string. The
+        vocabularies stay separate schemas so that neither domain's next reason
+        has to be argued in the other.
+
+        There is no `trip_already_started`. It could only have described a route
+        cancellation refused because a journey had begun, and that refusal is
+        unreachable: a one-off route is cancellable only while its departure is
+        upcoming, and a trip can only start once it is past. Repeating Start on a
+        running trip is a success, not a refusal.
+
+        No reason accompanies an abandoned journey either. `aborted` records that
+        the driver said it did not happen; why is a taxonomy nobody has designed.
 
     SeatRequestId:
       type: string

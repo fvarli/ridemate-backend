@@ -6,6 +6,7 @@ namespace App\Support;
 
 use App\SeatRequests\RefusalReason;
 use App\SeatRequests\SeatRequestRefused;
+use App\Trips\TripRefused;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -40,7 +41,7 @@ final class ExceptionRenderer
     }
 
     /**
-     * @return array{0: string, 1: int, 2: array<string, list<string>>|null}
+     * @return array{0: string, 1: int, 2: array<string, mixed>|null}
      */
     private static function classify(Throwable $e): array
     {
@@ -51,8 +52,17 @@ final class ExceptionRenderer
             // ten distinct ways to be refused and the client may never display
             // `message`, so without a machine-readable discriminator the app
             // would show one generic sentence for states the server knows
-            // exactly. This is the only exception type that carries one.
+            // exactly.
             $e instanceof SeatRequestRefused => self::refusal($e),
+            // Beside it rather than through it. Two of the six trip reasons
+            // share a wire string with a seat-request reason and none of the
+            // rest do; folding them into one arm would make either domain's
+            // next reason an edit to the other's mapping.
+            $e instanceof TripRefused => [
+                ApiError::CONFLICT,
+                409,
+                ['reason' => $e->reason->value],
+            ],
             $e instanceof AuthenticationException => [ApiError::UNAUTHENTICATED, 401, null],
             $e instanceof AuthorizationException => [ApiError::FORBIDDEN, 403, null],
             $e instanceof ModelNotFoundException => [ApiError::NOT_FOUND, 404, null],

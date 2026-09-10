@@ -22,7 +22,10 @@ use Illuminate\Http\Request;
  * developer-facing English for logs and debugging, and the client must never
  * display it — the OpenAPI description says so explicitly.
  *
- * `details` appears only where it means something, which today is validation.
+ * `details` appears only where it means something: field failures on a
+ * validation error, and a stable `reason` on a refusal a client must handle
+ * differently. Its absence is therefore meaningful too.
+ *
  * `request_id` always matches the X-Request-Id response header, so a member's
  * screenshot is enough to find the log line.
  */
@@ -49,7 +52,11 @@ final class ApiError
     /**
      * Builds the error response.
      *
-     * @param  array<string, list<string>>|null  $details
+     * Values are lists of developer-facing messages keyed by field, except for
+     * the reserved scalar keys the contract documents — `reason` and
+     * `current_status`.
+     *
+     * @param  array<string, mixed>|null  $details
      */
     public static function response(
         Request $request,

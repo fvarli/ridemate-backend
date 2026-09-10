@@ -20,6 +20,9 @@ use App\Http\Controllers\Api\V1\SeatRequests\ListMySeatRequestsController;
 use App\Http\Controllers\Api\V1\SeatRequests\ListRouteSeatRequestsController;
 use App\Http\Controllers\Api\V1\SeatRequests\RequestSeatController;
 use App\Http\Controllers\Api\V1\SeatRequests\WithdrawSeatRequestController;
+use App\Http\Controllers\Api\V1\Trips\AbortTripController;
+use App\Http\Controllers\Api\V1\Trips\CompleteTripController;
+use App\Http\Controllers\Api\V1\Trips\StartTripController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -146,6 +149,42 @@ Route::post('routes/{routeId}/cancel', CancelRouteController::class)
     ->middleware('auth.token')
     ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
     ->name('routes.cancel');
+
+/*
+ * Making the journey.
+ *
+ * Three commands, all the driver's, all route-scoped: a trip has no identifier
+ * of its own because a route has at most one and nothing needs to name it
+ * separately. `{routeId}` carries the same UUIDv7 constraint as its neighbours,
+ * so a malformed id never matches and becomes an ordinary 404 rather than a 422
+ * the contract does not describe.
+ *
+ * All three are bodyless. Each names the state it wants rather than a change to
+ * apply, so a retry after a lost response is the same command observed again —
+ * tier 2 in `docs/api-conventions.md`, and the reason no `Idempotency-Key`
+ * exists anywhere in this API.
+ *
+ * There is no passenger counterpart. Nothing here records who boarded, and
+ * attendance is not a thing this phase knows.
+ *
+ * Not throttled, for the same reason the other authenticated writes are not:
+ * the per-address budgets guard the endpoints that hand out credentials, and
+ * these already require one.
+ */
+Route::post('routes/{routeId}/trip/start', StartTripController::class)
+    ->middleware('auth.token')
+    ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->name('routes.trip.start');
+
+Route::post('routes/{routeId}/trip/complete', CompleteTripController::class)
+    ->middleware('auth.token')
+    ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->name('routes.trip.complete');
+
+Route::post('routes/{routeId}/trip/abort', AbortTripController::class)
+    ->middleware('auth.token')
+    ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->name('routes.trip.abort');
 
 /*
  * Seat requests.
