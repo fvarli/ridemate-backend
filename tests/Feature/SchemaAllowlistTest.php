@@ -52,6 +52,7 @@ final class SchemaAllowlistTest extends TestCase
         'routes',
         'seat_requests',
         'spatial_ref_sys',
+        'trips',
     ];
 
     public function test_the_schema_contains_only_allowed_tables(): void
@@ -91,10 +92,11 @@ final class SchemaAllowlistTest extends TestCase
             // their own timestamps.
             'audit_events', 'idempotency_records',
             // Product domain, later phases. `seat_requests` left this list in
-            // Phase 13, which built the asking. `route_occurrences` did not:
-            // Phase 13 v1 accepts requests on one-off routes only, so nothing
+            // Phase 13, which built the asking, and `trips` in Phase 14, which
+            // records whether the journey was made. `route_occurrences` still
+            // has not: both phases support one-off routes only, so nothing
             // per-day reads an occurrence yet.
-            'vehicles', 'route_occurrences', 'trips',
+            'vehicles', 'route_occurrences',
             'conversations', 'messages', 'reviews', 'trusted_contacts',
             'safety_incidents', 'blocks', 'reports', 'notifications',
             // Deferred: nothing is queued, so nothing needs a queue table.

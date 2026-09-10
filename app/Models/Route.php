@@ -12,6 +12,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * A journey a driver has published.
@@ -47,6 +48,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property CarbonImmutable $created_at
  * @property CarbonImmutable $updated_at
  * @property-read Account $account
+ * @property-read ?Trip $trip
  * @property-read Place $originPlace
  * @property-read Place $destinationPlace
  */
@@ -87,6 +89,20 @@ class Route extends Model
             'created_at' => 'immutable_datetime',
             'updated_at' => 'immutable_datetime',
         ];
+    }
+
+    /**
+     * The making of this journey, if it has been started.
+     *
+     * Zero or one, enforced by a unique `route_id`. Null is not a gap in the
+     * data — it is `not_started`, which nothing stores. See
+     * `App\Trips\TripLifecycle`.
+     *
+     * @return HasOne<Trip, $this>
+     */
+    public function trip(): HasOne
+    {
+        return $this->hasOne(Trip::class);
     }
 
     /**
