@@ -9,7 +9,6 @@ use App\Models\Route;
 use App\Models\Trip;
 use App\Routes\Recurrence;
 use Carbon\CarbonImmutable;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -34,19 +33,8 @@ use Illuminate\Support\Facades\DB;
  * control flow — a domain that relied on catching it would be using the
  * database to decide something it could have decided itself.
  *
- * AUTHORIZATION IS IN THE QUERY
- *
- * The route is fetched scoped to its owner, so a driver asking about somebody
- * else's journey gets the same answer as one asking about a journey that does
- * not exist. `docs/api-conventions.md`: distinguishing them says the resource
- * is real.
- *
- * LOCK ORDER
- *
- * This command locks the route and nothing else. Accept (Phase 13) locks a seat
- * request then a route; nothing anywhere locks a route then a seat request, so
- * `request → route` remains the only two-resource order in the system and a
- * cycle stays unreachable.
+ * Authorization, the lock and the lock order live in `OwnedRoute`, which every
+ * trip command shares so the rule cannot differ between them.
  *
  * WHAT `in_progress` DOES NOT MEAN
  *
@@ -56,22 +44,16 @@ use Illuminate\Support\Facades\DB;
  */
 final class StartTrip
 {
+    public function __construct(private readonly OwnedRoute $routes) {}
+
     public function __invoke(
         Account $driver,
         string $routeId,
         ?CarbonImmutable $now = null,
     ): StartedTrip {
         return DB::transaction(function () use ($driver, $routeId, $now): StartedTrip {
-            $route = Route::query()
-                ->where('account_id', $driver->id)
-                ->lockForUpdate()
-                ->find($routeId);
-
-            if (! $route instanceof Route) {
-                throw (new ModelNotFoundException)->setModel(Route::class, [$routeId]);
-            }
-
-            $existing = $route->trip()->first();
+            $route = $this->routes->lock($driver, $routeId);
+            $existing = $this->routes->tripOf($route);
 
             if ($existing instanceof Trip) {
                 // Deliberately terminal: no recurrence check, no availability
