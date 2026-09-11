@@ -390,9 +390,13 @@ here.
 No cost, fare or contribution field — see *Cost-sharing vocabulary*. No driver name, rating,
 verification badge, trip count, trust score or vehicle on a route: RideMate does not have
 them, and a plausible value beside real departure times is what makes a screen of fixtures
-look like server truth. No `route_occurrences`, no seat requests, no corridor query, no maps
-vendor, no geocoding and no polyline. **RideMate does not know the driven road** — which is
-exactly why discovery matches endpoints and claims no proximity.
+look like server truth. No `route_occurrences`, no corridor query, no maps vendor, no
+geocoding and no polyline. **RideMate does not know the driven road** — which is exactly why
+discovery matches endpoints and claims no proximity.
+
+Seat requests and trips are their own domains rather than fields on a route: a route is a
+plan a driver stated, an asking is somebody else's, and whether the journey was made is a
+third fact that neither of the other two implies. See *Trips* below.
 
 ### Privacy
 
@@ -403,6 +407,144 @@ endpoint writes a commute into a log line.
 Nothing here claims encryption at rest, an audit trail, or a precise-location consent flow.
 None of those was built, and documenting a control that does not exist is worse than
 documenting none.
+
+## Trips — whether a published journey was actually made
+
+A fourth truth, independent of the route's `status`, its `departure_state` and any seat
+request. A published journey can be `completed`; a cancelled one was never begun; a journey
+can be under way while somebody's asking is still pending. **Nothing reconciles them**, and
+no endpoint derives one from another.
+
+### One row per route, and one state it cannot hold
+
+`trips` carries `route_id` with a **`unique` constraint**, so a journey has at most one trip.
+Three states are storable, enforced by a check constraint as well as by the enum:
+`in_progress`, `completed`, `aborted`.
+
+The fourth state a caller sees — `not_started` — **is not stored**. It is what the absence of
+a row means, turned into a state on the way out by `App\Trips\TripLifecycle`. Storing it
+would need a row for every published journey nobody has begun, to say nothing that absence
+does not already say.
+
+Two further check constraints make the timestamps biconditional rather than merely nullable:
+`completed_at is not null` **if and only if** the status is `completed`, and the same for
+`aborted_at`. `started_at` is `not null` always — a trip exists because it started. A fourth
+constraint forbidding both endings at once was written, mutation-tested, found unreachable
+behind the two above, and removed rather than kept as a guard nothing can trip.
+
+### The route row is the serialization point
+
+All three commands take `lockForUpdate` on the **route**, and on nothing else. The trip is
+read inside that lock, so two devices pressing Start converge: the second waits, finds the
+first's trip, and answers with it. `unique (route_id)` stays as defence, not as control flow
+— a domain that caught the constraint would be using the database to decide something it
+could have decided itself.
+
+Authorization and the lock live together in `App\Trips\OwnedRoute`, shared by all three, so
+the rule cannot differ between them. A route that is not the caller's raises the same
+non-disclosing **404** as one that does not exist.
+
+Nothing here locks a seat request, which would invert Phase 13's `request → route` order.
+That is the only two-resource lock order in the system, and a cycle is unreachable because
+nothing takes them the other way round.
+
+### Starting
+
+`POST /api/v1/routes/{routeId}/trip/start` — bodyless, `201` the first time and `200` for a
+repeat, both carrying the same trip.
+
+**An existing trip is resolved before anything mutable is checked.** Start names a single
+target state, so a repeat must keep succeeding however the world has moved on since;
+checking route eligibility first would make a command that already succeeded begin to fail
+later. Only a route with no trip reaches the eligibility checks at all — and their order is
+load-bearing:
+
+1. **recurrence** — a weekday plan has no single departure to make, so it is refused first.
+   `RouteDeparture::state` calls a recurring route upcoming for ever, and a clock check placed
+   above this would answer `departure_not_reached` for every commute and make
+   `recurring_route_unsupported` unreachable.
+2. **availability** — a withdrawn journey is refused before the clock, so a driver is told the
+   journey is gone rather than told to wait for something that will never become possible.
+3. **the departure instant**, read in the route's own timezone. **No grace window**: an early
+   start would be the server agreeing to something that has not happened.
+
+**No passenger is required.** A driver making the journey alone is making the journey, and
+requiring an accepted seat would let an empty car block a departure that is happening anyway.
+
+### Ending
+
+`POST /api/v1/routes/{routeId}/trip/complete` and `.../trip/abort` — bodyless, always `200`,
+never `201`: nothing is created, and a repeat returns the stored ending untouched.
+
+**Eligibility is not re-run.** Recurrence, publication state, the departure instant and who
+accepted a seat were creation concerns, answered when the trip began; asking them again would
+let a journey that is demonstrably under way become impossible to finish because its route
+changed afterwards, and a driver stuck with a permanently running trip has no honest way out.
+`RouteDeparture::instant()` is deliberately not called by either.
+
+A terminal state is immutable. Completing something already completed is that completion
+observed again; completing something **aborted** is a different claim about what happened and
+is refused rather than allowed to overwrite the record.
+
+**No reason accompanies an abort.** No taxonomy has been designed, and a free-text field would
+be somewhere one member writes about another.
+
+### What a trip does not mean, and does not touch
+
+`in_progress` means an authorized driver pressed Start and the server accepted it. **Not**
+that the driver is at the origin, that the vehicle is moving, that anybody boarded, or that
+any location is known — there are no coordinates in this API. `completed` means the driver
+said the journey was made: not that anywhere was reached, that anything is owed, or that
+anybody may now be reviewed.
+
+Seat requests are untouched by all three commands: Phase 13's four states are the passenger's
+own history, and a journey ending is not an answer to anybody's asking. Route cancellation is
+untouched too, in both directions — `app/Routes` was not modified by this domain, and no trip
+state is derived from a cancelled route.
+
+### Refusals
+
+Six reasons, published at `error.details.reason` with `409 conflict`. Renaming one is a
+breaking change; clients map each to their own approved copy, because `message` is
+developer-facing English no client displays.
+
+| reason | means |
+|---|---|
+| `recurring_route_unsupported` | a weekday plan has no single departure to make |
+| `departure_not_reached` | the scheduled time has not arrived, in the route's own timezone |
+| `route_unavailable` | the journey was withdrawn |
+| `trip_not_started` | there is nothing to complete or abandon |
+| `already_completed` | the journey was already reported as made |
+| `already_aborted` | the journey was already abandoned |
+
+Two of these strings are also seat-request reasons, deliberately: the same meaning deserves
+the same wire string, which keeps a client's mapping simple. The two vocabularies stay
+separate schemas so neither domain's next reason has to be argued in the other — and because
+they overlap, `Error.details.reason` is `anyOf` rather than `oneOf`, which would reject
+exactly the values both enums share.
+
+There is no `trip_already_started`. It would only have described a route cancellation refused
+because a trip exists, and that refusal is unreachable: a one-off route is cancellable only
+while its departure is upcoming, and a trip can only start once it is past.
+
+### Where the lifecycle is published
+
+On exactly three schemas: `MyRoute` (the owner's own list), `MySeatRequestRoute` (the journey
+nested in a passenger's own asking), and `TripEnvelope` (the body of the three commands).
+
+**Not** on `Route`, which publication and cancellation answer with; not on `RouteEnvelope`;
+and not on `DiscoveredRoute`. The public feed says nothing about whether a journey was made,
+and a contract test asserts `MyRoute` is `Route` plus `trip` exactly, so a field added to one
+and not the other fails rather than quietly leaving the owner's list behind.
+
+### What is not in this domain
+
+Phase 14 supports **one-off journeys only**. `route_occurrences` still does not exist, so a
+weekday plan has no per-day trip to make and says so. Nothing infers a lifecycle
+automatically: no scheduler completes a trip, no clock aborts one, and no departure passing
+starts one. There is no location, GPS, map, navigation, realtime channel, polling endpoint,
+push notification, chat, SOS, attendance, boarding, no-show, review eligibility, rating, trust
+signal or cost anywhere in it.
 
 ## Admin and operations
 
@@ -468,7 +610,7 @@ This is a product and regulatory-characterisation boundary, not a style preferen
 Whether driver-set cost sharing may ever become editable is a question for legal and
 product review, not for a schema author.
 
-## Roadmap — Phase 13 onward
+## Roadmap — Phase 15 onward
 
 In dependency order. Only what a phase earns is created.
 
@@ -483,8 +625,8 @@ lifecycle, an approval rate needs seat requests, and a Trust Score needs all of 
 |---|---|---|
 | 11 | **Profile minimum** ✅ | a name and initials — another member can finally be named honestly |
 | 12 | **Discovery** ✅ | exact-endpoint search over published plans, the first public feed with cursor pagination, and a card reduced to what the service knows. **Not** corridor matching: `route_occurrences`, the spatial query and its GiST index were re-examined and deliberately not built — see `decisions/0008-discovery-v1.md` |
-| 13 | **Seat requests** | seat availability finally becomes a real quantity; approval rate gets a source; the first command likely to need tier-3 `Idempotency-Key` |
-| 14 | **Trip lifecycle** | trip counts |
+| 13 | **Seat requests** ✅ | seat availability became a real quantity and approval rate got a source. Expected to need tier-3 `Idempotency-Key` and did not: every command names a single target state |
+| 14 | **Trip lifecycle** ✅ | whether a journey was actually made — the fact a trip count would have to count. See *Trips* above |
 | 15 | **Reviews** | ratings |
 | 16 | **Verification** | the verified state and its badge |
 | 17 | **Trust Score** | depends on 13–16; the match card is finally whole |
@@ -500,12 +642,13 @@ until one is configured.
 
 ## The schema, and what is deliberately absent
 
-Nine tables exist. Phase 9 created `accounts`, `auth_sessions`, `auth_tokens`,
+Eleven tables exist. Phase 9 created `accounts`, `auth_sessions`, `auth_tokens`,
 `otp_challenges`, and Laravel's own `cache` and `cache_locks`; Phase 10 added `places` and
 `routes`; Phase 11 added `profiles`. Phase 12 added none — discovery reads what publication
-and the profile already store. `SchemaAllowlistTest` asserts that list exactly, so a tenth
-cannot arrive without editing it — the descendant of Phase 8's "no product table exists"
-guard, which was the same assertion with an empty list.
+and the profile already store. Phase 13 added `seat_requests` and Phase 14 added `trips`,
+one row per route. `SchemaAllowlistTest` asserts that list exactly, so a twelfth cannot
+arrive without editing it — the descendant of Phase 8's "no product table exists" guard,
+which was the same assertion with an empty list.
 
 Still **not created**, each with a reason rather than an oversight:
 

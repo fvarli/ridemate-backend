@@ -140,14 +140,23 @@ nothing to replay because there is nothing that happened twice.
 > `POST /api/v1/routes/{routeId}/cancel` is the canonical example: no request body, no
 > `expected_status`, no key. Cancelling an already-cancelled route is the same cancellation
 > observed again.
+>
+> **Every command since has chosen this tier.** Phase 13 added withdraw, accept and decline;
+> Phase 14 added `trip/start`, `trip/complete` and `trip/abort`. All six are bodyless for the
+> same reason. Start is the interesting one: it *creates* a row, so it looks like tier 1 —
+> but the client mints no id for it, because a route has at most one trip and
+> `unique (route_id)` says so. The route is both the address and the key, which is why Start
+> answers `201` the first time and `200` for a repeat while returning the same trip.
 
 **3. Explicit `Idempotency-Key`.** For a command with several meaningful transitions or
 outcomes, where neither the resource id nor a single target state is enough to say what the
 caller meant. The header is unique per caller and endpoint, with the response replayed.
 
-> Seat-request accept/reject is the expected first case. **No such endpoint exists**, so none
-> is documented here, and `idempotency_records` is not created. Tier 3 is built by the
-> command that first needs it.
+> Seat-request accept and decline were the expected first case. They shipped in Phase 13 and
+> did **not** need it: each names a single target state, so tier 2 was enough. Phase 14's
+> three trip commands are the same. **No endpoint uses tier 3**, so none is documented here
+> and `idempotency_records` is not created. Tier 3 is built by the command that first needs
+> it — twice now, the command that was going to need it did not.
 
 Choosing tier 1 or 2 is not a shortcut past tier 3. It is the observation that a command
 whose intent is fully named by a resource id, or whose repetition is a no-op, does not need a
@@ -167,11 +176,17 @@ passenger withdraws is resolved without holding a lock across a mobile round tri
 losing client re-renders the new truth rather than showing an error — that is a UI state,
 not a failure.
 
-**Not implemented in Phase 10 either, and deliberately not.** The one transition that
-exists — cancellation — has a single target state, so re-running it changes nothing and
-there is no losing client to re-render. `expected_status` earns its place at the first
-transition with several valid source states; until then it would be a field every caller
-sends and no server branch reads.
+**Still not implemented, and deliberately not.** Seven transitions exist now — route
+cancellation, the three seat-request answers, and the three trip lifecycle commands — and
+every one of them names a single target state, so re-running it changes nothing and there is
+no losing client to re-render. `expected_status` earns its place at the first transition with
+several valid source states; until then it would be a field every caller sends and no server
+branch reads.
+
+Where two commands genuinely race, the answer has been a row lock rather than a header. A
+seat request serializes on `request → route`, and all three trip commands serialize on the
+route row alone — see *Trips* in `docs/architecture.md`. That is a lock held for the length
+of one transaction, not across a mobile round trip, which is the thing this section refuses.
 
 ## Cost-sharing vocabulary
 
