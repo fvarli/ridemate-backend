@@ -49,11 +49,73 @@ final class SchemaAllowlistTest extends TestCase
         'otp_challenges',
         'places',
         'profiles',
+        'reviews',
         'routes',
         'seat_requests',
         'spatial_ref_sys',
         'trips',
     ];
+
+    /**
+     * The columns `reviews` must NOT have.
+     *
+     * Every one of them is a fact another row already carries, and storing a
+     * second copy is how the two start to disagree. `reviewer_account_id` and
+     * `reviewee_account_id` in particular would make an impossible pairing
+     * representable — the schema's safety rests on their absence, not on the
+     * code that would have filled them. See the migration.
+     *
+     * @var list<string>
+     */
+    private const FORBIDDEN_REVIEW_COLUMNS = [
+        'reviewer_account_id',
+        'reviewee_account_id',
+        'account_id',
+        'route_id',
+        'trip_id',
+        'submitted_at',
+        'counterpart_reviewed_at',
+        'released_at',
+        'release_at',
+        'is_released',
+        'text',
+        'body',
+        'comment',
+        'tags',
+        'average',
+        'rating_count',
+        'trust_score',
+        'moderated_at',
+        'reported_at',
+        'deleted_at',
+    ];
+
+    /**
+     * CARRIES WEIGHT. A review is five columns and a pair of timestamps.
+     */
+    public function test_reviews_holds_nothing_it_can_derive(): void
+    {
+        /** @var list<string> $columns */
+        $columns = DB::table('information_schema.columns')
+            ->where('table_schema', 'public')
+            ->where('table_name', 'reviews')
+            ->orderBy('column_name')
+            ->pluck('column_name')
+            ->all();
+
+        self::assertSame([
+            'created_at',
+            'id',
+            'rating',
+            'reviewer_role',
+            'seat_request_id',
+            'updated_at',
+        ], $columns);
+
+        foreach (self::FORBIDDEN_REVIEW_COLUMNS as $forbidden) {
+            self::assertNotContains($forbidden, $columns, $forbidden);
+        }
+    }
 
     public function test_the_schema_contains_only_allowed_tables(): void
     {
@@ -92,12 +154,13 @@ final class SchemaAllowlistTest extends TestCase
             // their own timestamps.
             'audit_events', 'idempotency_records',
             // Product domain, later phases. `seat_requests` left this list in
-            // Phase 13, which built the asking, and `trips` in Phase 14, which
-            // records whether the journey was made. `route_occurrences` still
-            // has not: both phases support one-off routes only, so nothing
-            // per-day reads an occurrence yet.
+            // Phase 13, which built the asking, `trips` in Phase 14, which
+            // records whether the journey was made, and `reviews` in Phase 15,
+            // which records what one party says about the other.
+            // `route_occurrences` still has not: every phase so far supports
+            // one-off routes only, so nothing per-day reads an occurrence yet.
             'vehicles', 'route_occurrences',
-            'conversations', 'messages', 'reviews', 'trusted_contacts',
+            'conversations', 'messages', 'trusted_contacts',
             'safety_incidents', 'blocks', 'reports', 'notifications',
             // Deferred: nothing is queued, so nothing needs a queue table.
             'jobs', 'failed_jobs',
