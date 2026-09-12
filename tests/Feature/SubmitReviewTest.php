@@ -439,7 +439,69 @@ final class SubmitReviewTest extends TestCase
         });
     }
 
+    // ------------------------------------------ one journey is not another
+
+    /**
+     * CARRIES WEIGHT. Another date's completed journey does not make this one
+     * reviewable.
+     *
+     * Eligibility asks whether the journey THIS asking was accepted onto was
+     * completed. Resolving the trip by route alone would accept any journey the
+     * plan ever made — so a member accepted for Tuesday could rate a stranger
+     * on the strength of Monday having run. That is the whole reason the lookup
+     * is dated.
+     *
+     * Built with planted rows because no command in 16a can make a second
+     * journey on one route, and no guard was weakened to reach it.
+     */
+    public function test_another_dates_completed_journey_does_not_make_this_reviewable(): void
+    {
+        $world = $this->world(tripStatus: null);
+        $this->plantCompletedTripOn($world, $world->route->soleServiceDate()->subDay());
+
+        $this->assertRefused(
+            fn () => $this->submit($world, $world->passenger, 5),
+            RefusalReason::TripNotCompleted,
+        );
+    }
+
+    /** And completing the journey the asking is for does make it reviewable. */
+    public function test_completing_this_dates_journey_makes_it_reviewable(): void
+    {
+        $world = $this->world(tripStatus: null);
+        $this->plantCompletedTripOn($world, $world->route->soleServiceDate()->subDay());
+        $this->plantCompletedTripOn($world, $world->route->soleServiceDate(), tail: 'fe');
+
+        $submitted = $this->submit($world, $world->passenger, 5);
+
+        self::assertSame(5, $submitted->review->rating);
+    }
+
     // ------------------------------------------------------------- fixtures
+
+    /**
+     * A finished journey on one date of this world's route.
+     *
+     * Written straight to the row: the dated eligibility lookup cannot be
+     * proved through a command while both recurrence guards stand.
+     */
+    private function plantCompletedTripOn(
+        _World $world,
+        CarbonImmutable $serviceDate,
+        string $tail = 'ff',
+    ): void {
+        DB::table('trips')->insert([
+            'id' => $this->tripId($tail),
+            'route_id' => $world->route->id,
+            'service_date' => $serviceDate->toDateString(),
+            'status' => TripStatus::Completed->value,
+            'started_at' => $this->completedAt->subHour(),
+            'completed_at' => $this->completedAt,
+            'aborted_at' => null,
+            'created_at' => $this->completedAt->subHour(),
+            'updated_at' => $this->completedAt,
+        ]);
+    }
 
     private function submit(
         _World $world,

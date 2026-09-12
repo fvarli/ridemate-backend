@@ -31,7 +31,9 @@ use Illuminate\Support\Facades\DB;
  * Start at once therefore serialize: the second finds the first's trip and
  * answers with it. The `unique (route_id)` constraint stays as defence, not as
  * control flow — a domain that relied on catching it would be using the
- * database to decide something it could have decided itself.
+ * database to decide something it could have decided itself. The constraint
+ * is dated now — `unique (route_id, service_date)` — so what serializes is a
+ * journey rather than a plan.
  *
  * Authorization, the lock and the lock order live in `OwnedRoute`, which every
  * trip command shares so the rule cannot differ between them.
@@ -53,7 +55,7 @@ final class StartTrip
     ): StartedTrip {
         return DB::transaction(function () use ($driver, $routeId, $now): StartedTrip {
             $route = $this->routes->lock($driver, $routeId);
-            $existing = $this->routes->tripOf($route);
+            $existing = $this->routes->tripOn($route, $route->departure_date);
 
             if ($existing instanceof Trip) {
                 // Deliberately terminal: no recurrence check, no availability

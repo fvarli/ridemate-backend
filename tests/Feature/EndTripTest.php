@@ -363,7 +363,75 @@ final class EndTripTest extends TestCase
         }
     }
 
+    // ------------------------------------------- one journey is not another
+
+    /**
+     * CARRIES WEIGHT. Another date's ending is not this journey's.
+     *
+     * A completed trip on one date says nothing about another. Resolving a trip
+     * by route alone would hand this command that finished journey and answer
+     * `already_completed` for a journey nobody has started — a refusal about
+     * the wrong day.
+     *
+     * Reached with a planted row, because no command in 16a can make a second
+     * journey on one route and no guard was weakened to reach it.
+     */
+    public function test_a_completed_journey_on_another_date_does_not_end_this_one(): void
+    {
+        $driver = $this->driver();
+        $route = $this->route($driver);
+
+        $this->plantCompleted($route, $route->soleServiceDate()->subDay());
+
+        self::assertSame(
+            RefusalReason::TripNotStarted,
+            $this->refusal(fn () => $this->complete($driver, $route))->reason,
+        );
+        self::assertSame(
+            RefusalReason::TripNotStarted,
+            $this->refusal(fn () => $this->abort($driver, $route))->reason,
+        );
+    }
+
+    /** And ending this journey leaves the other date's alone. */
+    public function test_ending_this_journey_does_not_touch_another_dates(): void
+    {
+        [$driver, $route] = $this->started();
+        $other = $route->soleServiceDate()->subDay();
+        $this->plantCompleted($route, $other);
+
+        $this->complete($driver, $route);
+
+        self::assertSame(2, Trip::query()->where('route_id', $route->id)->count());
+        self::assertSame(TripStatus::Completed, Trip::query()
+            ->where('route_id', $route->id)
+            ->where('service_date', $other->toDateString())
+            ->sole()
+            ->status);
+    }
+
     // ------------------------------------------------------------- fixtures
+
+    /**
+     * A finished journey on a date of this route, written straight to the row.
+     *
+     * No command in 16a can produce a second date, so the dated lookups are
+     * proved with a row rather than by lifting a recurrence guard.
+     */
+    private function plantCompleted(Route $route, CarbonImmutable $serviceDate): void
+    {
+        DB::table('trips')->insert([
+            'id' => '01991e00-0000-7000-8000-0000000000ff',
+            'route_id' => $route->id,
+            'service_date' => $serviceDate->toDateString(),
+            'status' => TripStatus::Completed->value,
+            'started_at' => $this->departed()->subHour(),
+            'completed_at' => $this->departed(),
+            'aborted_at' => null,
+            'created_at' => $this->departed()->subHour(),
+            'updated_at' => $this->departed(),
+        ]);
+    }
 
     /**
      * A driver whose one-off journey is already under way.

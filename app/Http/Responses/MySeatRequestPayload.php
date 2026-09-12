@@ -8,6 +8,7 @@ use App\Reviews\MyReview;
 use App\SeatRequests\OwnSeatRequest;
 use App\SeatRequests\SeatRequestPage;
 use App\Trips\TripLifecycle;
+use App\Trips\TripOnServiceDate;
 
 /**
  * What a member sees of their own asking.
@@ -119,7 +120,12 @@ final class MySeatRequestPayload
                 // hold an accepted request on a published journey that is
                 // under way, or on one that was cancelled before it began, and
                 // both are said plainly rather than reconciled.
-                'trip' => TripPayload::from(TripLifecycle::of($route->trip)),
+                // Named by the date this member asked about, which is the
+                // journey their request is for — not whichever journey the
+                // plan happens to have made.
+                'trip' => TripPayload::from(TripLifecycle::of(
+                    TripOnServiceDate::in($route->trips, $own->request->service_date),
+                )),
             ],
         ];
     }

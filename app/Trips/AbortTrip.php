@@ -42,7 +42,7 @@ final class AbortTrip
     ): EndedTrip {
         return DB::transaction(function () use ($driver, $routeId, $now): EndedTrip {
             $route = $this->routes->lock($driver, $routeId);
-            $trip = $this->routes->tripOf($route);
+            $trip = $this->routes->tripOn($route, $route->departure_date);
 
             if (! $trip instanceof Trip) {
                 throw TripRefused::tripNotStarted();

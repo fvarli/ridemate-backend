@@ -8,6 +8,7 @@ use App\Models\Account;
 use App\Models\Review;
 use App\Models\SeatRequest;
 use App\Models\Trip;
+use App\Trips\TripOnServiceDate;
 use App\Trips\TripStatus;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -95,7 +96,7 @@ final class SubmitReview
     private function visibleRequest(Account $reviewer, string $seatRequestId): SeatRequest
     {
         $request = SeatRequest::query()
-            ->with(['route.account', 'route.trip', 'passenger'])
+            ->with(['route.account', 'route.trips', 'passenger'])
             ->find($seatRequestId);
 
         if (! $request instanceof SeatRequest) {
@@ -159,7 +160,10 @@ final class SubmitReview
             throw ReviewRefused::seatRequestNotAccepted();
         }
 
-        $trip = $request->route->trip;
+        // The journey THIS asking is for, named by its own date. A route may
+        // make many, and any other one of them says nothing about whether the
+        // journey this member was accepted onto was completed.
+        $trip = TripOnServiceDate::in($request->route->trips, $request->service_date);
 
         // Covers a journey nobody started, one under way, and one abandoned.
         // `aborted` means a driver moved a started trip to that state — not

@@ -15,6 +15,7 @@ use App\Routes\Recurrence;
 use App\Routes\RideRules;
 use App\Routes\RouteDeparture;
 use App\Trips\TripLifecycle;
+use App\Trips\TripOnServiceDate;
 use App\Trips\TripState;
 use App\Trips\TripStatus;
 use Carbon\CarbonImmutable;
@@ -221,24 +222,48 @@ final class TripPersistenceTest extends TestCase
         self::assertSame(0, Trip::query()->count());
     }
 
-    public function test_a_route_reaches_its_trip_and_has_at_most_one(): void
+    public function test_a_route_reaches_the_journey_made_on_a_date(): void
     {
         $route = $this->route();
         $this->insert($route);
 
-        $found = Route::query()->with('trip')->findOrFail($route->id);
+        $found = Route::query()->with('trips')->findOrFail($route->id);
 
-        $trip = $found->trip;
+        $trip = TripOnServiceDate::in($found->trips, $route->soleServiceDate());
 
         self::assertInstanceOf(Trip::class, $trip);
         self::assertSame($route->id, $trip->route_id);
     }
 
-    public function test_a_route_that_was_never_started_has_no_trip(): void
+    public function test_a_journey_that_was_never_started_has_no_trip(): void
     {
         $route = $this->route();
 
-        self::assertNull(Route::query()->findOrFail($route->id)->trip);
+        self::assertNull(TripOnServiceDate::in(
+            Route::query()->with('trips')->findOrFail($route->id)->trips,
+            $route->soleServiceDate(),
+        ));
+    }
+
+    /**
+     * CARRIES WEIGHT. Another date's journey is not this one.
+     *
+     * The relation is a collection now, and reading it singularly would answer
+     * with whichever trip the route happens to hold. Reached with a planted row
+     * because no command in 16a can make a second one.
+     */
+    public function test_another_dates_journey_is_not_this_one(): void
+    {
+        $route = $this->route();
+        $this->insert($route, date: $route->soleServiceDate()->subDay());
+
+        $found = Route::query()->with('trips')->findOrFail($route->id);
+
+        self::assertNull(TripOnServiceDate::in($found->trips, $route->soleServiceDate()));
+        self::assertInstanceOf(
+            Trip::class,
+            TripOnServiceDate::in($found->trips, $route->soleServiceDate()->subDay()),
+        );
     }
 
     // ------------------------------------------------ the lifecycle projection
@@ -409,11 +434,12 @@ final class TripPersistenceTest extends TestCase
         ?CarbonImmutable $completedAt = null,
         ?CarbonImmutable $abortedAt = null,
         ?string $id = null,
+        ?CarbonImmutable $date = null,
     ): void {
         DB::table('trips')->insert([
             'id' => $id ?? $this->id('01'),
             'route_id' => $route->id,
-            'service_date' => $route->departure_date,
+            'service_date' => ($date ?? $route->soleServiceDate())->toDateString(),
             'status' => $status,
             'started_at' => $startedAt ?? CarbonImmutable::now(),
             'completed_at' => $completedAt,

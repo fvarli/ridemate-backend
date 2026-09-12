@@ -47,7 +47,7 @@ final class ListMyRoutesController
             // `trip` is eager-loaded with the rest: without it every row would
             // fetch its own lifecycle during serialization, and a page would
             // cost a query per journey.
-            ->with(['originPlace', 'destinationPlace', 'trip'])
+            ->with(['originPlace', 'destinationPlace', 'trips'])
             ->where('account_id', $member->id)
             ->orderByDesc('created_at')
             ->orderByDesc('id');

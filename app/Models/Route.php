@@ -9,10 +9,11 @@ use App\Routes\Recurrence;
 use App\Routes\RouteDeparture;
 use App\Routes\RouteStatus;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use LogicException;
 
 /**
@@ -49,7 +50,7 @@ use LogicException;
  * @property CarbonImmutable $created_at
  * @property CarbonImmutable $updated_at
  * @property-read Account $account
- * @property-read ?Trip $trip
+ * @property-read Collection<int, Trip> $trips
  * @property-read Place $originPlace
  * @property-read Place $destinationPlace
  */
@@ -93,17 +94,22 @@ class Route extends Model
     }
 
     /**
-     * The making of this journey, if it has been started.
+     * The makings of this route's journeys, one per service date at most.
      *
-     * Zero or one, enforced by a unique `route_id`. Null is not a gap in the
-     * data — it is `not_started`, which nothing stores. See
-     * `App\Trips\TripLifecycle`.
+     * `hasMany` since Phase 16a, and the plural is the point: a route is a plan
+     * and a journey is that plan on a date, so `unique (route_id, service_date)`
+     * — not `unique (route_id)` — is what bounds this. Nothing may read it
+     * singularly: the date says which journey, and a relation that answered
+     * without one would be choosing.
      *
-     * @return HasOne<Trip, $this>
+     * An absent row is not a gap in the data. It is `not_started`, which
+     * nothing stores. See `App\Trips\TripLifecycle`.
+     *
+     * @return HasMany<Trip, $this>
      */
-    public function trip(): HasOne
+    public function trips(): HasMany
     {
-        return $this->hasOne(Trip::class);
+        return $this->hasMany(Trip::class);
     }
 
     /**

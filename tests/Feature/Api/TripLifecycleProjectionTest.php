@@ -6,6 +6,7 @@ namespace Tests\Feature\Api;
 
 use App\Models\Account;
 use App\Models\Place;
+use App\Models\Route;
 use App\Trips\AbortTrip;
 use App\Trips\CompleteTrip;
 use App\Trips\StartTrip;
@@ -402,6 +403,62 @@ final class TripLifecycleProjectionTest extends TestCase
         $many = $this->queriesFor(fn () => $this->mySeatRequests($passenger, limit: 4));
 
         self::assertSame($one, $many, 'My Seat Requests queries grew with the page');
+    }
+
+    // ------------------------------------------ one journey is not another
+
+    /**
+     * CARRIES WEIGHT. The owner's list shows this journey, not another date's.
+     *
+     * A plan may make many journeys, and a projection that read "the route's
+     * trip" would publish whichever one happened to exist — telling a driver
+     * that today is under way because last week was.
+     *
+     * Planted, because no command in 16a can make a second journey on one
+     * route; the guards are untouched.
+     */
+    public function test_my_routes_ignores_another_dates_journey(): void
+    {
+        $driver = $this->member('+905321110000', 'İrem Yılmaz');
+        $this->publish($driver, 1);
+        $route = Route::query()->findOrFail($this->routeId(1));
+
+        $this->plantInProgress($route, $route->soleServiceDate()->subDay());
+
+        $trip = $this->myRoutes($driver)['routes'][0]['trip'];
+
+        self::assertSame('not_started', $trip['state']);
+        self::assertNull($trip['started_at']);
+    }
+
+    /** And the passenger's own listing follows the date they asked about. */
+    public function test_my_requests_ignores_another_dates_journey(): void
+    {
+        [, $routeId, $passenger] = $this->askedAndAccepted();
+        $route = Route::query()->findOrFail($routeId);
+
+        $this->plantInProgress($route, $route->soleServiceDate()->subDay());
+
+        $trip = $this->mySeatRequests($passenger)['seat_requests'][0]['route']['trip'];
+
+        self::assertSame('not_started', $trip['state']);
+        self::assertNull($trip['started_at']);
+    }
+
+    /** A journey on a date of this route, written straight to the row. */
+    private function plantInProgress(Route $route, CarbonImmutable $serviceDate): void
+    {
+        DB::table('trips')->insert([
+            'id' => '01991e00-0000-7000-8000-0000000000ff',
+            'route_id' => $route->id,
+            'service_date' => $serviceDate->toDateString(),
+            'status' => 'in_progress',
+            'started_at' => $this->departed(),
+            'completed_at' => null,
+            'aborted_at' => null,
+            'created_at' => $this->departed(),
+            'updated_at' => $this->departed(),
+        ]);
     }
 
     // ------------------------------------------------------------ fixtures

@@ -7,6 +7,7 @@ namespace App\Trips;
 use App\Models\Account;
 use App\Models\Route;
 use App\Models\Trip;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 
 /**
@@ -49,13 +50,30 @@ final class OwnedRoute
     }
 
     /**
-     * The trip this route has, read inside the lock the caller already holds.
+     * The trip of one dated journey, read inside the lock the caller holds.
      *
-     * Null is the ordinary answer rather than missing data: most routes have
+     * The date is required rather than derived: a route is a plan, and asking
+     * it for "its" trip without saying which journey is the question Phase 16a
+     * exists to stop anything asking. `first()` is exact here rather than a
+     * choice — `unique (route_id, service_date)` means the predicate below
+     * matches at most one row.
+     *
+     * Null is the ordinary answer rather than missing data: most journeys have
      * never been started, which is `not_started`.
      */
-    public function tripOf(Route $route): ?Trip
+    public function tripOn(Route $route, ?CarbonImmutable $serviceDate): ?Trip
     {
-        return $route->trip()->first();
+        // A recurring plan has no single journey, so there is nothing to look
+        // for. Null rather than an exception because the callers must still
+        // reach their own refusals: Start answers `recurring_route_unsupported`
+        // a few lines later, and Complete and Abort answer `trip_not_started`,
+        // which is exactly what they answered before a date existed.
+        if ($serviceDate === null) {
+            return null;
+        }
+
+        return $route->trips()
+            ->where('service_date', $serviceDate->toDateString())
+            ->first();
     }
 }
