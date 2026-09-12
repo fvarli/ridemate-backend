@@ -92,4 +92,15 @@ class SeatRequest extends Model
     {
         return $this->status === SeatRequestStatus::Pending;
     }
+
+    /**
+     * Whether the driver agreed to give this seat.
+     *
+     * Terminal: an accepted request cannot be withdrawn or declined, which is
+     * what lets a reader act on it without holding a lock.
+     */
+    public function isAccepted(): bool
+    {
+        return $this->status === SeatRequestStatus::Accepted;
+    }
 }
