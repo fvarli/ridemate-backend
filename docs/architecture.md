@@ -632,7 +632,7 @@ A review may be submitted when all of these hold, and the server is the only jud
 4. now is before `trips.completed_at` + 14 days.
 
 **A cancelled route does not override a completed trip.** The two are independent truths: a
-driver may withdraw a plan after making the journey, and the journey still happened. Nothing
+driver may withdraw a plan after marking its trip completed, and that record stands. Nothing
 in this domain consults `routes.status`.
 
 **The window is the server's arithmetic.** `App\Reviews\ReviewWindow` owns the fourteen days;
