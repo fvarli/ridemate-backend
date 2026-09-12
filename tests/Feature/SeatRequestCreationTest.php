@@ -461,7 +461,139 @@ final class SeatRequestCreationTest extends TestCase
         }
     }
 
+    // ------------------------------------------------- the dated journey
+
+    /**
+     * CARRIES WEIGHT. One id, two dates, and the second is not the first.
+     *
+     * A journey is a route on a date, so an id already spent on Monday does not
+     * describe Tuesday. Without the date in the identity comparison the command
+     * would hand Monday's asking back as a successful replay — the wrong row,
+     * reported as a success, which is worse than any refusal.
+     *
+     * Reached synthetically because it has to be: both recurrence guards stand,
+     * so no command in 16a can put two dates on one route. The row is planted
+     * with a date its route does not run on, which is exactly the shape 16b
+     * makes ordinary.
+     */
+    public function test_reusing_an_id_for_another_date_of_one_route_is_refused(): void
+    {
+        $route = $this->route($this->driver());
+        $passenger = $this->passenger();
+
+        $this->plantRequest(
+            $this->id('01'),
+            $route,
+            $passenger,
+            $route->soleServiceDate()->addDay(),
+        );
+
+        self::assertSame(
+            RefusalReason::IdAlreadyUsed,
+            $this->refusal($passenger, $this->id('01'), $route)->reason,
+        );
+    }
+
+    /** And the same id on the same date is still one asking arriving twice. */
+    public function test_reusing_an_id_for_the_same_date_is_still_a_replay(): void
+    {
+        $route = $this->route($this->driver());
+        $passenger = $this->passenger();
+
+        $first = $this->ask($passenger, $this->id('01'), $route);
+        $second = $this->ask($passenger, $this->id('01'), $route);
+
+        self::assertFalse($first->wasAlreadyRequested);
+        self::assertTrue($second->wasAlreadyRequested);
+        self::assertSame($first->request->id, $second->request->id);
+        self::assertSame(1, SeatRequest::query()->count());
+    }
+
+    /**
+     * CARRIES WEIGHT. A collision names the asking that collided.
+     *
+     * The refusal carries the existing row, so it must be the one for THIS
+     * dated journey. A member holding an asking on another date has not asked
+     * about this one, and a lookup scoped only to the route could hand back
+     * either.
+     */
+    public function test_a_duplicate_names_the_asking_for_that_date(): void
+    {
+        $route = $this->route($this->driver());
+        $passenger = $this->passenger();
+
+        // Planted first, so a route-scoped lookup would reach this one.
+        $this->plantRequest(
+            $this->id('01'),
+            $route,
+            $passenger,
+            $route->soleServiceDate()->subDay(),
+        );
+        $this->plantRequest($this->id('02'), $route, $passenger, $route->soleServiceDate());
+
+        $refusal = $this->refusal($passenger, $this->id('03'), $route);
+
+        self::assertSame(RefusalReason::AlreadyRequested, $refusal->reason);
+        self::assertNotNull($refusal->existing);
+        self::assertSame($this->id('02'), $refusal->existing->id);
+        self::assertSame(
+            $route->soleServiceDate()->toDateString(),
+            $refusal->existing->service_date->toDateString(),
+        );
+    }
+
+    /** A new asking carries the journey it is for, not merely the plan. */
+    public function test_a_new_asking_records_its_service_date(): void
+    {
+        $route = $this->route($this->driver());
+
+        $asked = $this->ask($this->passenger(), $this->id('01'), $route);
+
+        self::assertSame(
+            $route->soleServiceDate()->toDateString(),
+            $asked->request->service_date->toDateString(),
+        );
+    }
+
+    /** The plan is still refused, exactly as before. */
+    public function test_a_weekday_plan_is_still_refused(): void
+    {
+        $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
+
+        self::assertSame(
+            RefusalReason::RecurringRouteUnsupported,
+            $this->refusal($this->passenger(), $this->id('01'), $route)->reason,
+        );
+    }
+
     // ------------------------------------------------------------ fixtures
+
+    /**
+     * A seat request on a date of this route, written straight to the row.
+     *
+     * No command can produce a date other than the route's while the recurrence
+     * guards stand, so the dated predicates are proved with rows rather than by
+     * weakening a guard to reach them.
+     */
+    private function plantRequest(
+        string $requestId,
+        Route $route,
+        Account $passenger,
+        CarbonImmutable $serviceDate,
+    ): void {
+        DB::table('seat_requests')->insert([
+            'id' => $requestId,
+            'route_id' => $route->id,
+            'account_id' => $passenger->id,
+            'service_date' => $serviceDate->toDateString(),
+            'status' => SeatRequestStatus::Pending->value,
+            'requested_at' => CarbonImmutable::now(),
+            'decided_at' => null,
+            'withdrawn_at' => null,
+            'created_at' => CarbonImmutable::now(),
+            'updated_at' => CarbonImmutable::now(),
+        ]);
+    }
 
     private function ask(
         Account $passenger,

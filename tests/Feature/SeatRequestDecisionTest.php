@@ -535,7 +535,87 @@ final class SeatRequestDecisionTest extends TestCase
         self::assertNull($this->lockOn($declining, 'routes'));
     }
 
+    // --------------------------------------------- capacity is per journey
+
+    /**
+     * CARRIES WEIGHT. A full Monday does not close Tuesday.
+     *
+     * `seats_offered` is what the driver offers on each journey the plan makes,
+     * so accepted passengers on one date say nothing about another's capacity.
+     * Counting across every date would let one full day shut a recurring plan
+     * for every other — and with one seat offered, the very first acceptance
+     * would close it for ever.
+     *
+     * Reached synthetically because both recurrence guards stand: the accepted
+     * row on the other date is planted, which is the shape 16b makes ordinary.
+     */
+    public function test_a_full_date_does_not_consume_another_dates_seat(): void
+    {
+        $driver = $this->driver();
+        $route = $this->route($driver, seats: 1);
+        $passenger = $this->passenger();
+        $this->ask($passenger, $this->id('01'), $route);
+
+        // Yesterday's journey is full. Today's has not been touched.
+        $this->plantAccepted(
+            $this->id('09'),
+            $route,
+            $this->passenger('+905322220009'),
+            $route->soleServiceDate()->subDay(),
+        );
+
+        $accepted = $this->accept($driver, $this->id('01'));
+
+        self::assertSame(SeatRequestStatus::Accepted, $accepted->request->status);
+    }
+
+    /** And the seat it does consume is still counted on its own date. */
+    public function test_the_offered_seat_is_still_consumed_within_one_date(): void
+    {
+        $driver = $this->driver();
+        $route = $this->route($driver, seats: 1);
+        $first = $this->passenger();
+        $second = $this->passenger('+905322220002');
+
+        $this->ask($first, $this->id('01'), $route);
+        $this->ask($second, $this->id('02'), $route);
+
+        $this->accept($driver, $this->id('01'));
+
+        self::assertSame(
+            RefusalReason::RouteFull,
+            $this->refusal(fn () => $this->accept($driver, $this->id('02')))->reason,
+        );
+    }
+
     // ------------------------------------------------------------- fixtures
+
+    /**
+     * An accepted request on a date of this route, written straight to the row.
+     *
+     * No command can produce a date other than the route's while the recurrence
+     * guards stand, so the dated capacity predicate is proved with a row rather
+     * than by weakening a guard to reach it.
+     */
+    private function plantAccepted(
+        string $requestId,
+        Route $route,
+        Account $passenger,
+        CarbonImmutable $serviceDate,
+    ): void {
+        DB::table('seat_requests')->insert([
+            'id' => $requestId,
+            'route_id' => $route->id,
+            'account_id' => $passenger->id,
+            'service_date' => $serviceDate->toDateString(),
+            'status' => SeatRequestStatus::Accepted->value,
+            'requested_at' => CarbonImmutable::now(),
+            'decided_at' => CarbonImmutable::now(),
+            'withdrawn_at' => null,
+            'created_at' => CarbonImmutable::now(),
+            'updated_at' => CarbonImmutable::now(),
+        ]);
+    }
 
     /**
      * A published one-off journey with one pending request on it.

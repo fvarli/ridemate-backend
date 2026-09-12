@@ -87,7 +87,7 @@ final class AcceptSeatRequest
             throw SeatRequestRefused::routeUnavailable();
         }
 
-        if ($this->acceptedSeats($route) >= $route->seats_offered) {
+        if ($this->acceptedSeats($request) >= $route->seats_offered) {
             throw SeatRequestRefused::routeFull();
         }
 
@@ -98,11 +98,26 @@ final class AcceptSeatRequest
         return new TransitionedSeatRequest($request, wasAlreadyInTargetState: false);
     }
 
-    /** Counted while the route lock is held, or it is only an opinion. */
-    private function acceptedSeats(Route $route): int
+    /**
+     * Counted while the route lock is held, or it is only an opinion.
+     *
+     * PER DATED JOURNEY, NOT PER ROUTE
+     *
+     * `seats_offered` is what the driver offers on each journey the plan makes,
+     * so Monday's accepted passengers say nothing about Tuesday's capacity.
+     * Counting across every date would let one full day close a plan for every
+     * other. Nothing can produce a second date yet — both recurrence guards
+     * stand — so in 16a this counts exactly what it counted before.
+     *
+     * The date comes from the REQUEST rather than the route: it is the journey
+     * this particular asking is for, which is the term that survives 16b when a
+     * route stops having only one.
+     */
+    private function acceptedSeats(SeatRequest $request): int
     {
         return SeatRequest::query()
-            ->where('route_id', $route->id)
+            ->where('route_id', $request->route_id)
+            ->where('service_date', $request->service_date->toDateString())
             ->where('status', SeatRequestStatus::Accepted->value)
             ->count();
     }

@@ -45,11 +45,12 @@ use Illuminate\Support\Facades\DB;
  *
  * A new create locks the ROUTE only — the `find()` above touches an id that by
  * definition has no row, and PostgreSQL takes no lock for one that is not
- * there. An existing-id retry locks that REQUEST only and returns without ever
- * reaching for a route. Accept (a later commit) locks request then route.
- * Nothing anywhere locks route then request, so the two-resource order in this
- * system is request → route and a deadlock cycle is unreachable. Keep it that
- * way.
+ * there. An existing-id retry locks that REQUEST only: it reads the route
+ * unlocked to learn which dated journey the stored asking is for, and takes no
+ * lock on it, so it still cannot put a `route → request` order into the system.
+ * Accept locks request then route. Nothing anywhere LOCKS route then request,
+ * so the two-resource order in this system is request → route and a deadlock
+ * cycle is unreachable. Keep it that way.
  *
  * CAPACITY IS NOT CONSULTED
  *
@@ -101,22 +102,58 @@ final class RequestSeat
     /**
      * What a supplied id that already exists means.
      *
-     * The same member asking again about the same journey is the same asking,
-     * however it has since been answered. Anything else is an id collision, and
-     * the refusal says only that — no owner, no route, no status.
+     * The same member asking again about the same DATED journey is the same
+     * asking, however it has since been answered. Anything else is an id
+     * collision, and the refusal says only that — no owner, no route, no date,
+     * no status.
+     *
+     * WHY THE DATE IS PART OF THE IDENTITY
+     *
+     * A journey is a route on a date, so the same id carrying a different date
+     * describes a different asking. Without this term a client that reused one
+     * id for Monday and then Tuesday would be handed Monday's row back as a
+     * successful replay — the wrong asking, reported as a success. Nothing can
+     * produce that yet, because both recurrence guards stand and a one-off
+     * route has one date; it is written now so 16b cannot introduce it
+     * silently.
+     *
+     * WHY THE ROUTE IS READ HERE, AND WHY THAT IS STILL SAFE
+     *
+     * The date is the route's while every journey is one-off, so learning it
+     * needs the route. The read is UNLOCKED, so the retry path still takes no
+     * route lock and the `request → route` order is untouched. It re-runs no
+     * eligibility, so a retry still succeeds on a journey since cancelled or
+     * departed. And it happens only once the account and route already match,
+     * where the route certainly exists — a request references it and the
+     * foreign key cascades, so an orphan is unrepresentable.
+     *
+     * In 16b the caller names the date and this read disappears again.
      */
     private function resolveExisting(
         SeatRequest $existing,
         Account $passenger,
         string $routeId,
+        ?Route $locked = null,
     ): SeatRequested {
-        if ($existing->account_id === $passenger->id && $existing->route_id === $routeId) {
-            // Nothing is written, not even a timestamp: a retry is one asking
-            // arriving twice, not a second event.
-            return new SeatRequested($existing, wasAlreadyRequested: true);
+        if ($existing->account_id !== $passenger->id || $existing->route_id !== $routeId) {
+            throw SeatRequestRefused::idAlreadyUsed();
         }
 
-        throw SeatRequestRefused::idAlreadyUsed();
+        // `$locked` is passed by the race path, which is already holding this
+        // route; everywhere else the row is read fresh and without a lock.
+        $route = $locked ?? Route::query()->find($routeId);
+
+        if (! $route instanceof Route) {
+            $this->noSuchRoute($routeId);
+        }
+
+        if ($existing->service_date->toDateString() !== $route->soleServiceDate()->toDateString()) {
+            throw SeatRequestRefused::idAlreadyUsed();
+        }
+
+        // Nothing is written, not even a timestamp: a retry is one asking
+        // arriving twice, not a second event.
+        return new SeatRequested($existing, wasAlreadyRequested: true);
     }
 
     /**
@@ -199,12 +236,18 @@ final class RequestSeat
         $byId = SeatRequest::query()->find($requestId);
 
         if ($byId instanceof SeatRequest) {
-            // Same answer as a retry that never raced: identity decides.
-            return $this->resolveExisting($byId, $passenger, $route->id);
+            // Same answer as a retry that never raced: identity decides. The
+            // route is already locked here, so it is handed over rather than
+            // read again.
+            return $this->resolveExisting($byId, $passenger, $route->id, $route);
         }
 
+        // Scoped to the dated journey, not merely to the route: a member may
+        // hold askings on several dates of one plan, and the refusal must name
+        // the one that collided rather than whichever row is found first.
         $byMember = SeatRequest::query()
             ->where('route_id', $route->id)
+            ->where('service_date', $route->soleServiceDate()->toDateString())
             ->where('account_id', $passenger->id)
             ->first();
 
