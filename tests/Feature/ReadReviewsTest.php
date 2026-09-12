@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Http\Responses\ReceivedReviewPayload;
 use App\Models\Account;
 use App\Models\Place;
 use App\Models\Profile;
@@ -59,6 +60,169 @@ final class ReadReviewsTest extends TestCase
     }
 
     // ------------------------------------------------------------ visibility
+
+    // ------------------------------------- one journey does not release another
+
+    /**
+     * CARRIES WEIGHT. THE PRIVACY REGRESSION THIS COMMIT EXISTS FOR.
+     *
+     * A route may run on many dates. If the trip join binds only the plan, a
+     * review inherits the deadline of EVERY journey that plan ever made — so an
+     * old journey whose fourteen days expired long ago releases a review about
+     * a recent one whose counterpart has said nothing. That is a disclosure,
+     * not a cardinality bug, and it is invisible until a plan has two journeys.
+     *
+     * D1 finished sixteen days ago; its deadline is long past. D2 finished an
+     * hour ago and belongs to the asking under review, with no counterpart. D2
+     * must stay hidden.
+     */
+    public function test_an_old_journeys_expired_deadline_does_not_release_a_recent_one(): void
+    {
+        $world = $this->world();
+        $this->review($world, ReviewerRole::Passenger, 5);
+
+        // A second journey of the same plan, finished long enough ago that its
+        // own deadline has passed.
+        $this->plantTrip(
+            $world,
+            $world->route->soleServiceDate()->subDays(20),
+            completedAt: $this->completedAt->subDays(16),
+            tail: 'f1',
+        );
+
+        $page = $this->about($world->driver, at: $this->completedAt->addHour());
+
+        self::assertSame([], $page->reviews, 'another journey released this one');
+        self::assertNull($page->nextCursor);
+    }
+
+    /**
+     * CARRIES WEIGHT. A counterpart on another journey is not a counterpart.
+     *
+     * Release means the other side of THIS relationship answered. A review on a
+     * different asking — even the same two members on the same plan, a
+     * different day — is a different conversation.
+     */
+    public function test_a_review_on_another_journey_does_not_release_this_one(): void
+    {
+        $world = $this->world();
+        $this->review($world, ReviewerRole::Passenger, 5);
+
+        // The same two members, the same plan, another day — and the driver's
+        // review of THAT journey.
+        $other = $this->world(driver: $world->driver, routeTail: '02', requestTail: '02');
+        $this->review($other, ReviewerRole::Driver, 4, tail: '02');
+
+        $page = $this->about($world->driver, at: $this->completedAt->addHour());
+
+        self::assertSame([], $page->reviews, 'another journey\'s review released this one');
+    }
+
+    /** And the real counterpart still releases it at once. */
+    public function test_the_counterpart_on_this_journey_still_releases_it(): void
+    {
+        $world = $this->world();
+        $this->review($world, ReviewerRole::Passenger, 5);
+        $this->plantTrip(
+            $world,
+            $world->route->soleServiceDate()->subDays(20),
+            completedAt: $this->completedAt->subDays(16),
+            tail: 'f1',
+        );
+
+        $this->review($world, ReviewerRole::Driver, 4, tail: '02');
+
+        $page = $this->about($world->driver, at: $this->completedAt->addHour());
+
+        self::assertCount(1, $page->reviews);
+    }
+
+    /**
+     * CARRIES WEIGHT. One review, one row, however many journeys the plan made.
+     *
+     * A plan-scoped join multiplies a review by its route's trips. The dated
+     * join makes that structurally impossible, so no `distinct` is hiding it.
+     */
+    public function test_a_released_review_appears_once_however_many_journeys_exist(): void
+    {
+        $world = $this->world();
+        $this->review($world, ReviewerRole::Passenger, 5);
+        $this->review($world, ReviewerRole::Driver, 4, tail: '02');
+
+        foreach (['f1', 'f2', 'f3'] as $index => $tail) {
+            $this->plantTrip(
+                $world,
+                $world->route->soleServiceDate()->subDays(20 + $index),
+                completedAt: $this->completedAt->subDays(16 + $index),
+                tail: $tail,
+            );
+        }
+
+        $page = $this->about($world->driver, at: $this->completedAt->addHour());
+
+        self::assertCount(1, $page->reviews);
+        self::assertNull($page->nextCursor);
+    }
+
+    /**
+     * CARRIES WEIGHT. The rendered date is the asking's, not the plan's.
+     *
+     * A plan may run on many days; the asking names the one this member was
+     * accepted onto, which is the journey being rated.
+     */
+    public function test_the_journey_date_is_the_one_the_asking_was_for(): void
+    {
+        $world = $this->world();
+        $asked = $world->route->soleServiceDate()->addDays(7);
+
+        // The asking and its journey moved to another day; the plan's own date
+        // did not.
+        DB::table('seat_requests')
+            ->where('id', $world->request->id)
+            ->update(['service_date' => $asked->toDateString()]);
+        DB::table('trips')
+            ->where('route_id', $world->route->id)
+            ->update(['service_date' => $asked->toDateString()]);
+
+        $this->review($world, ReviewerRole::Passenger, 5);
+        $this->review($world, ReviewerRole::Driver, 4, tail: '02');
+
+        $page = $this->about($world->driver, at: $this->completedAt->addHour());
+
+        self::assertCount(1, $page->reviews);
+
+        // The rendered payload, not merely the domain value: the provenance
+        // that matters is the one that reaches the member.
+        $rendered = ReceivedReviewPayload::page($page);
+        $journey = $rendered['reviews'][0]['journey'];
+        self::assertIsArray($journey);
+
+        self::assertSame($asked->toDateString(), $journey['departure_date']);
+        self::assertNotSame(
+            $world->route->departure_date?->toDateString(),
+            $journey['departure_date'],
+        );
+    }
+
+    /** A journey of this plan on one date, written straight to the row. */
+    private function plantTrip(
+        _ReadWorld $world,
+        CarbonImmutable $serviceDate,
+        CarbonImmutable $completedAt,
+        string $tail,
+    ): void {
+        DB::table('trips')->insert([
+            'id' => $this->tripId($tail),
+            'route_id' => $world->route->id,
+            'service_date' => $serviceDate->toDateString(),
+            'status' => 'completed',
+            'started_at' => $completedAt->subHour(),
+            'completed_at' => $completedAt,
+            'aborted_at' => null,
+            'created_at' => $completedAt->subHour(),
+            'updated_at' => $completedAt,
+        ]);
+    }
 
     /**
      * CARRIES WEIGHT. Before the counterpart writes, there is nothing to read.

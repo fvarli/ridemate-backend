@@ -9,6 +9,7 @@ use App\Models\Review;
 use App\Support\KeysetCursor;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Query\JoinClause;
 
 /**
  * What other members have said about this one, newest first.
@@ -54,13 +55,30 @@ final class ListMyReviews
     ): ReviewPage {
         $query = Review::query()
             ->select('reviews.*')
-            // The relationship, the journey and its making. All three are
-            // needed to say who the subject is and whether the review has
-            // released, and `trips.route_id` is unique so none of them
-            // multiplies a row.
+            // The relationship, the plan and the making of one journey. All
+            // three are needed to say who the subject is and whether the review
+            // has released.
+            //
+            // THE TRIP IS BOUND TO THE JOURNEY, NOT THE PLAN
+            //
+            // A route may make many journeys, so `trips.route_id` alone would
+            // match every one of them: one review would multiply into a row per
+            // trip, and `ReleasedReviews`' deadline clause would then read
+            // "released if ANY journey of this plan finished fourteen days ago"
+            // — releasing a review whose counterpart never answered. The asking
+            // names the date, so the asking is what the trip joins to.
+            //
+            // Exact by construction rather than by `distinct`: with both
+            // columns bound, `unique (route_id, service_date)` permits one
+            // matching trip, so there is no duplication to collapse. A
+            // `distinct` here would hide a wrong join instead of fixing one.
             ->join('seat_requests', 'seat_requests.id', '=', 'reviews.seat_request_id')
             ->join('routes', 'routes.id', '=', 'seat_requests.route_id')
-            ->join('trips', 'trips.route_id', '=', 'routes.id')
+            ->join('trips', static function (JoinClause $journey): void {
+                $journey
+                    ->on('trips.route_id', '=', 'seat_requests.route_id')
+                    ->on('trips.service_date', '=', 'seat_requests.service_date');
+            })
             ->with([
                 // Without these every row would fetch its reviewer's profile and
                 // its journey's places one at a time.

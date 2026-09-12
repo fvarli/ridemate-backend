@@ -28,9 +28,11 @@ use App\Reviews\ReviewPage;
  * deliberately: that object carries an id which addresses a place in discovery,
  * and this screen has no use for one. The absence of a type, not a duplicate.
  *
- * `departure_date` is never null here. A recurring route cannot have a trip, so
- * every reviewable journey is one-off and dated — the nullability that exists
- * on `Route` is unreachable on this surface.
+ * `departure_date` is never null here, and it is the ASKING's service date
+ * rather than the route's. A route is a plan and may run on many dates, so its
+ * own `departure_date` answers a different question — and is absent entirely
+ * for a recurring one. The seat request names the journey this member was
+ * accepted onto, which is the one being rated, and it always carries a day.
  *
  * NO AGGREGATE
  *
@@ -81,8 +83,8 @@ final class ReceivedReviewPayload
             'journey' => [
                 'origin' => $route->originPlace->label,
                 'destination' => $route->destinationPlace->label,
-                // Not null on this surface: see the note above.
-                'departure_date' => $route->departure_date?->format('Y-m-d'),
+                // The journey this review is about, not the plan that made it.
+                'departure_date' => $received->serviceDate()->format('Y-m-d'),
                 // `HH:MM`, the one time format this contract has. A review is
                 // not the place to introduce a second.
                 'departure_time' => substr($route->departure_time, 0, 5),

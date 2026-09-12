@@ -43,7 +43,13 @@ final class ReleasedReviews
      * Narrows [$reviews] to the rows their subject is entitled to read.
      *
      * Expects the query to have joined `seat_requests`, `routes` and `trips`,
-     * which the caller needs anyway to know who the subject is.
+     * which the caller needs anyway to know who the subject is — and expects
+     * `trips` to be bound to the DATED journey, on `route_id` AND
+     * `service_date` together. The deadline clause below reads
+     * `trips.completed_at` from whatever that join matched, so a plan-scoped
+     * join would let one journey's expired deadline release another journey's
+     * review. The correctness of this predicate is therefore partly the
+     * caller's; `ListMyReviews` says so at the join itself.
      */
     /**
      * @param  Builder<Review>  $reviews
