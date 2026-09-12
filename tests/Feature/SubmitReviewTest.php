@@ -487,6 +487,7 @@ final class SubmitReviewTest extends TestCase
         DB::table('seat_requests')->insert([
             'id' => $this->requestId($requestTail),
             'route_id' => $route->id,
+            'service_date' => $route->departure_date,
             'account_id' => $passenger->id,
             'status' => $requestStatus->value,
             'requested_at' => $this->completedAt->subDays(4),
@@ -505,6 +506,7 @@ final class SubmitReviewTest extends TestCase
             DB::table('trips')->insert([
                 'id' => $this->tripId($routeTail),
                 'route_id' => $route->id,
+                'service_date' => $route->departure_date,
                 'status' => $tripStatus->value,
                 'started_at' => $this->completedAt->subHour(),
                 'completed_at' => $tripStatus === TripStatus::Completed

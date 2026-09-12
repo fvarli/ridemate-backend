@@ -202,6 +202,7 @@ final class TripPersistenceTest extends TestCase
         DB::table('trips')->insert([
             'id' => $this->id('01'),
             'route_id' => $this->routeId('ff'),
+            'service_date' => CarbonImmutable::now()->toDateString(),
             'status' => 'in_progress',
             'started_at' => CarbonImmutable::now(),
             'created_at' => CarbonImmutable::now(),
@@ -336,7 +337,7 @@ final class TripPersistenceTest extends TestCase
         self::assertSame(
             [
                 'id', 'route_id', 'status', 'started_at', 'completed_at',
-                'aborted_at', 'created_at', 'updated_at',
+                'aborted_at', 'created_at', 'updated_at', 'service_date',
             ],
             Schema::getColumnListing('trips'),
         );
@@ -412,6 +413,7 @@ final class TripPersistenceTest extends TestCase
         DB::table('trips')->insert([
             'id' => $id ?? $this->id('01'),
             'route_id' => $route->id,
+            'service_date' => $route->departure_date,
             'status' => $status,
             'started_at' => $startedAt ?? CarbonImmutable::now(),
             'completed_at' => $completedAt,

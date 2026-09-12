@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use LogicException;
 
 /**
  * A journey a driver has published.
@@ -149,6 +150,37 @@ class Route extends Model
     public function departureState(?CarbonImmutable $now = null): DepartureState
     {
         return $this->departure()->state($now);
+    }
+
+    /**
+     * The one date this route runs on, for a route that runs on exactly one.
+     *
+     * A journey is `(route_id, service_date)`, and while every requestable and
+     * runnable route is one-off there is nothing to choose: the route's own
+     * departure date IS the service date, so the commands derive it here rather
+     * than each holding its own copy of that reasoning.
+     *
+     * It throws instead of returning null because the callers have already
+     * refused a recurring route, and `routes_departure_shape_check` guarantees a
+     * one-off route carries a date — so a null here would mean the guard above
+     * it had been removed, which is a fault and not a case to handle.
+     *
+     * Phase 16b removes this: once a recurring plan can be asked about, the
+     * caller names the date and the route stops being able to answer alone.
+     */
+    public function soleServiceDate(): CarbonImmutable
+    {
+        $date = $this->departure_date;
+
+        if (! $date instanceof CarbonImmutable) {
+            throw new LogicException(sprintf(
+                'Route %s has no departure date, so it has no single service date. A recurring '
+                .'plan must be refused before this point, or the caller must name the date.',
+                $this->id,
+            ));
+        }
+
+        return $date;
     }
 
     public function isPublished(): bool

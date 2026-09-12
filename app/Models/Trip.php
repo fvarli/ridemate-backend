@@ -27,6 +27,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  *
  * @property string $id
  * @property string $route_id
+ * @property CarbonImmutable $service_date
  * @property TripStatus $status
  * @property CarbonImmutable $started_at
  * @property ?CarbonImmutable $completed_at
@@ -53,6 +54,9 @@ class Trip extends Model
     {
         return [
             'status' => TripStatus::class,
+            // Which dated journey of the route was made. A date, not a
+            // datetime, for the reason `routes.departure_date` is one.
+            'service_date' => 'immutable_date',
             'started_at' => 'immutable_datetime',
             'completed_at' => 'immutable_datetime',
             'aborted_at' => 'immutable_datetime',

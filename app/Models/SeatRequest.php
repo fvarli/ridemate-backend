@@ -32,6 +32,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string $id
  * @property string $route_id
  * @property string $account_id
+ * @property CarbonImmutable $service_date
  * @property SeatRequestStatus $status
  * @property CarbonImmutable $requested_at
  * @property ?CarbonImmutable $decided_at
@@ -59,6 +60,11 @@ class SeatRequest extends Model
     {
         return [
             'status' => SeatRequestStatus::class,
+            // The dated journey this asking is for. A date, not a datetime,
+            // for the reason `routes.departure_date` is one: it carries no
+            // time of day, and casting it to an instant would attach midnight
+            // in some zone and invite comparisons it does not represent.
+            'service_date' => 'immutable_date',
             'requested_at' => 'immutable_datetime',
             'decided_at' => 'immutable_datetime',
             'withdrawn_at' => 'immutable_datetime',

@@ -323,6 +323,7 @@ final class ReviewPersistenceTest extends TestCase
         DB::table('seat_requests')->insert([
             'id' => $this->requestId($requestTail),
             'route_id' => $route->id,
+            'service_date' => $route->departure_date,
             'account_id' => $passenger->id,
             'status' => 'accepted',
             'requested_at' => CarbonImmutable::now(),

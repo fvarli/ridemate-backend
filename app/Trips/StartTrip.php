@@ -126,9 +126,13 @@ final class StartTrip
     {
         $trip = new Trip;
         // Server-generated, unlike a route or a seat request: there is no
-        // client id to be idempotent on here, because the route already
-        // identifies the journey and `unique (route_id)` says so.
+        // client id to be idempotent on here, because the route and the date
+        // together identify the journey and `unique (route_id, service_date)`
+        // says so.
         $trip->route_id = $route->id;
+        // Derived, not named: the recurrence guard above has already refused
+        // every route that runs on more than one date.
+        $trip->service_date = $route->soleServiceDate();
         $trip->status = TripStatus::InProgress;
         $trip->started_at = $now ?? CarbonImmutable::now();
         $trip->save();

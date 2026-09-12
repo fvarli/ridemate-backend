@@ -275,6 +275,7 @@ final class SeatRequestPersistenceTest extends TestCase
         DB::table('seat_requests')->insert([
             'id' => $this->id('01'),
             'route_id' => $this->routeId('ff'),
+            'service_date' => CarbonImmutable::now()->toDateString(),
             'account_id' => $passenger->id,
             'status' => 'pending',
             'requested_at' => CarbonImmutable::now(),
@@ -330,6 +331,7 @@ final class SeatRequestPersistenceTest extends TestCase
             [
                 'id', 'route_id', 'account_id', 'status', 'requested_at',
                 'decided_at', 'withdrawn_at', 'created_at', 'updated_at',
+                'service_date',
             ],
             Schema::getColumnListing('seat_requests'),
         );
@@ -365,23 +367,37 @@ final class SeatRequestPersistenceTest extends TestCase
     // ------------------------------------------------- schema introspection
 
     /**
-     * The uniqueness is total, and the constraint definition says so.
+     * The uniqueness is total, dated, and the constraint definition says so.
      *
-     * A `WHERE` clause here would be the partial index this phase refused.
+     * A `WHERE` clause here would be the partial index this phase refused. The
+     * service date joined it in Phase 16a: a member may ask about Monday and
+     * Tuesday on one plan, and those are two journeys rather than one asking
+     * repeated.
      */
     public function test_the_uniqueness_is_not_partial(): void
     {
         $definition = DB::scalar(
             "select indexdef from pg_indexes
              where tablename = 'seat_requests'
-               and indexname = 'seat_requests_one_per_route_per_member'"
+               and indexname = 'seat_requests_one_per_journey_per_member'"
         );
 
         self::assertIsString($definition);
         self::assertStringContainsString('UNIQUE', $definition);
         self::assertStringContainsString('route_id', $definition);
+        self::assertStringContainsString('service_date', $definition);
         self::assertStringContainsString('account_id', $definition);
         self::assertStringNotContainsString('WHERE', $definition);
+    }
+
+    /** The route-scoped rule it replaced is gone, not merely shadowed. */
+    public function test_the_route_scoped_uniqueness_is_gone(): void
+    {
+        self::assertNull(DB::scalar(
+            "select indexdef from pg_indexes
+             where tablename = 'seat_requests'
+               and indexname = 'seat_requests_one_per_route_per_member'"
+        ));
     }
 
     public function test_both_keyset_indexes_exist(): void
@@ -471,6 +487,7 @@ final class SeatRequestPersistenceTest extends TestCase
         DB::table('seat_requests')->insert([
             'id' => $id ?? $this->id('01'),
             'route_id' => $route->id,
+            'service_date' => $route->departure_date,
             'account_id' => $passenger->id,
             'status' => $status,
             'requested_at' => CarbonImmutable::now(),

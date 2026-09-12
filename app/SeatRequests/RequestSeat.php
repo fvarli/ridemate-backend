@@ -164,6 +164,10 @@ final class RequestSeat
         // retry a new asking.
         $request->id = $requestId;
         $request->route_id = $route->id;
+        // Which dated journey is being asked about. Derived rather than named
+        // by the caller, because a one-off route has exactly one and the
+        // recurrence guard above has already refused everything else.
+        $request->service_date = $route->soleServiceDate();
         $request->account_id = $passenger->id;
         $request->status = SeatRequestStatus::Pending;
         $request->requested_at = $now ?? CarbonImmutable::now();
