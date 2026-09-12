@@ -50,6 +50,23 @@ final readonly class ReviewParticipants
     }
 
     /**
+     * Which side [$account] is, from ids alone.
+     *
+     * Needs only the request's `account_id` and its route's — no `Account`
+     * loaded on either side. A listing that eager-loaded the route (both of
+     * them do) therefore pays nothing per row, where resolving through [of]
+     * would fetch the passenger one at a time. Same answer, cheaper question.
+     */
+    public static function roleIn(SeatRequest $request, Account $account): ?ReviewerRole
+    {
+        return match ($account->id) {
+            $request->route->account_id => ReviewerRole::Driver,
+            $request->account_id => ReviewerRole::Passenger,
+            default => null,
+        };
+    }
+
+    /**
      * Which side [$account] is, or null when it is neither.
      *
      * Null is the ordinary answer for a member who is party to nothing here,

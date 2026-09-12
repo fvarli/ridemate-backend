@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Responses;
 
+use App\Reviews\MyReview;
 use App\SeatRequests\OwnSeatRequest;
 use App\SeatRequests\SeatRequestPage;
 use App\Trips\TripLifecycle;
@@ -32,15 +33,31 @@ use App\Trips\TripLifecycle;
 final class MySeatRequestPayload
 {
     /**
+     * ONLY THE LISTING CARRIES `my_review`.
+     *
+     * `from()` and `envelope()` are deliberately untouched: they are shared
+     * with asking for a seat and withdrawing one, and widening them would put
+     * the field on two command responses the contract does not name. It would
+     * be permanently null there anyway — a request just withdrawn cannot have
+     * been reviewed — which makes it a claim as well as a wider surface. This
+     * is the Phase 14 lesson, where a shared route payload widened publish and
+     * cancel by accident.
+     *
      * @param  SeatRequestPage<OwnSeatRequest>  $page
+     * @param  array<string, MyReview>  $mine  keyed by seat request id
      * @return array{seat_requests: list<array<string, mixed>>, next_cursor: string|null}
      */
-    public static function page(SeatRequestPage $page): array
+    public static function page(SeatRequestPage $page, array $mine = []): array
     {
         $requests = [];
 
         foreach ($page->requests as $own) {
-            $requests[] = self::from($own);
+            $requests[] = self::from($own) + [
+                // Required and nullable: a response without the key is not this
+                // contract, and reading absence as "not reviewed" would make an
+                // older backend claim every relationship is still open to rate.
+                'my_review' => ReviewPayload::mine($mine[$own->request->id] ?? null),
+            ];
         }
 
         return [

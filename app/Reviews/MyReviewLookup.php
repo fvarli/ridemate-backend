@@ -38,7 +38,7 @@ final class MyReviewLookup
      */
     public function for(SeatRequest $request, Account $caller): ?MyReview
     {
-        $role = ReviewParticipants::of($request)->roleOf($caller);
+        $role = ReviewParticipants::roleIn($request, $caller);
 
         if (! $role instanceof ReviewerRole) {
             return null;
@@ -70,7 +70,7 @@ final class MyReviewLookup
         $roles = [];
 
         foreach ($requests as $request) {
-            $role = ReviewParticipants::of($request)->roleOf($caller);
+            $role = ReviewParticipants::roleIn($request, $caller);
 
             if ($role instanceof ReviewerRole) {
                 $roles[$request->id] = $role;

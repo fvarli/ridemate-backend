@@ -9,13 +9,19 @@ use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 
 /**
- * Paging a seat-request feed.
+ * Paging one of this member's own feeds.
  *
- * Shared by both listings because the query contract is identical; what
- * differs is which surface's cursors are accepted, and that is the one thing
- * each subclass says.
+ * Shared by the two seat-request listings and by reviews-about-me, because the
+ * query contract is identical; what differs is which surface's cursors are
+ * accepted, and that is the one thing each subclass says. A cursor issued by
+ * one feed is refused by the others, which is what stops a client paging the
+ * wrong list with the right-looking token.
+ *
+ * Renamed from `ListSeatRequestsRequest` when reviews became the third feed:
+ * the old name had stopped being true, and a base class named after one of its
+ * subclasses is how the next feed ends up duplicating it instead.
  */
-abstract class ListSeatRequestsRequest extends FormRequest
+abstract class PagedFeedRequest extends FormRequest
 {
     public const DEFAULT_LIMIT = 20;
 

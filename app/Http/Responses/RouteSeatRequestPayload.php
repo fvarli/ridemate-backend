@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Responses;
 
+use App\Reviews\MyReview;
 use App\SeatRequests\IncomingSeatRequest;
 use App\SeatRequests\SeatRequestPage;
 
@@ -20,15 +21,23 @@ use App\SeatRequests\SeatRequestPage;
 final class RouteSeatRequestPayload
 {
     /**
+     * ONLY THE LISTING CARRIES `my_review`.
+     *
+     * `from()` and `envelope()` stay as they were, because they are shared with
+     * accepting and declining — see the same note on `MySeatRequestPayload`.
+     *
      * @param  SeatRequestPage<IncomingSeatRequest>  $page
+     * @param  array<string, MyReview>  $mine  keyed by seat request id
      * @return array{seat_requests: list<array<string, mixed>>, next_cursor: string|null}
      */
-    public static function page(SeatRequestPage $page): array
+    public static function page(SeatRequestPage $page, array $mine = []): array
     {
         $requests = [];
 
         foreach ($page->requests as $incoming) {
-            $requests[] = self::from($incoming);
+            $requests[] = self::from($incoming) + [
+                'my_review' => ReviewPayload::mine($mine[$incoming->request->id] ?? null),
+            ];
         }
 
         return [

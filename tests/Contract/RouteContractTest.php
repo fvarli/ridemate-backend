@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Contract;
 
+use App\Reviews\RefusalReason as ReviewRefusalReason;
 use App\Trips\RefusalReason;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\AssertionFailedError;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -519,6 +521,8 @@ final class RouteContractTest extends TestCase
             'Place', 'PlaceCatalogue', 'RideRules', 'RoutePublication',
             'Route', 'RouteEnvelope', 'RoutePage',
             'MyRoute', 'Trip', 'TripEnvelope',
+            'Review', 'ReviewEnvelope', 'ReviewSubmission', 'ReceivedReview',
+            'ReviewPage', 'MySeatRequestRow', 'RouteSeatRequestRow',
         ] as $name) {
             self::assertFalse(
                 $schemas[$name]['additionalProperties'] ?? null,
@@ -540,6 +544,87 @@ final class RouteContractTest extends TestCase
         self::assertStringContainsString('Opaque', $description);
         self::assertStringNotContainsString('created_at', $description);
         self::assertStringNotContainsString('base64', $description);
+    }
+
+    // -------------------------------------------------------- the listings
+
+    /**
+     * CARRIES WEIGHT. A listing row is its base plus `my_review`, exactly.
+     *
+     * The rows are spelled out rather than composed, for the reason `MyRoute`
+     * is: every schema here closes with `additionalProperties: false`, and
+     * under `allOf` each branch validates alone, so the closed base rejects the
+     * field the second branch adds. That duplication is safe only while
+     * something checks it, which is this — a field added to the base and not to
+     * the row fails here rather than quietly leaving a listing behind.
+     *
+     * @return iterable<string, array{0: string, 1: string}>
+     */
+    public static function listingRows(): iterable
+    {
+        yield "a member's own askings" => ['MySeatRequest', 'MySeatRequestRow'];
+        yield "a driver's incoming askings" => ['RouteSeatRequest', 'RouteSeatRequestRow'];
+    }
+
+    #[DataProvider('listingRows')]
+    public function test_a_listing_row_is_its_base_plus_my_review(
+        string $baseName,
+        string $rowName,
+    ): void {
+        /** @var array<string, mixed> $schemas */
+        $schemas = self::contractDocument()['components']['schemas'];
+
+        /** @var array{properties: array<string, mixed>, required: list<string>} $base */
+        $base = $schemas[$baseName];
+        /** @var array{properties: array<string, mixed>, required: list<string>, additionalProperties?: bool} $row */
+        $row = $schemas[$rowName];
+
+        $expectedProperties = array_keys($base['properties']);
+        $expectedProperties[] = 'my_review';
+        sort($expectedProperties);
+
+        $actualProperties = array_keys($row['properties']);
+        sort($actualProperties);
+
+        self::assertSame($expectedProperties, $actualProperties);
+
+        $expectedRequired = $base['required'];
+        $expectedRequired[] = 'my_review';
+        sort($expectedRequired);
+
+        $actualRequired = $row['required'];
+        sort($actualRequired);
+
+        self::assertSame($expectedRequired, $actualRequired);
+        self::assertFalse($row['additionalProperties'] ?? true);
+
+        // And the base stays free of it: the command responses answer with it,
+        // and Phase 15 did not widen them.
+        self::assertArrayNotHasKey('my_review', $base['properties']);
+        self::assertNotContains('my_review', $base['required']);
+    }
+
+    /**
+     * The five reasons, exactly, and the domain owns them.
+     */
+    public function test_the_review_refusal_vocabulary_is_exactly_the_domains(): void
+    {
+        /** @var list<string> $documented */
+        $documented = self::contractDocument()['components']['schemas']['ReviewRefusalReason']['enum'];
+
+        $emitted = array_map(
+            static fn (ReviewRefusalReason $reason): string => $reason->value,
+            ReviewRefusalReason::cases(),
+        );
+
+        sort($documented);
+        sort($emitted);
+
+        self::assertSame(
+            $documented,
+            $emitted,
+            'openapi.yaml and App\\Reviews\\RefusalReason disagree about the reasons',
+        );
     }
 
     // ---------------------------------------------------- the trip commands
@@ -661,10 +746,22 @@ final class RouteContractTest extends TestCase
 
         self::assertArrayHasKey('anyOf', $reason);
         self::assertArrayNotHasKey('oneOf', $reason);
+        // Three domains now. `id_already_used` is shared by two of them, which
+        // is a second reason `oneOf` could never have worked here.
         self::assertSame([
             ['$ref' => '#/components/schemas/SeatRequestRefusalReason'],
             ['$ref' => '#/components/schemas/TripRefusalReason'],
+            ['$ref' => '#/components/schemas/ReviewRefusalReason'],
         ], $reason['anyOf']);
+
+        /** @var list<string> $review */
+        $review = $schemas['ReviewRefusalReason']['enum'];
+
+        self::assertSame(
+            ['id_already_used'],
+            array_values(array_intersect($seat, $review)),
+            'the review and seat-request vocabularies share exactly one string',
+        );
     }
 
     /**

@@ -7,7 +7,7 @@ namespace App\Http\Requests;
 use App\SeatRequests\ListMySeatRequests;
 
 /** A member paging their own askings. */
-final class ListMySeatRequestsRequest extends ListSeatRequestsRequest
+final class ListMySeatRequestsRequest extends PagedFeedRequest
 {
     protected function surface(): string
     {

@@ -9,6 +9,8 @@ use App\Http\Controllers\Api\V1\Auth\VerifyPasscodeController;
 use App\Http\Controllers\Api\V1\MeController;
 use App\Http\Controllers\Api\V1\Profiles\SaveProfileController;
 use App\Http\Controllers\Api\V1\Profiles\ShowProfileController;
+use App\Http\Controllers\Api\V1\Reviews\ListMyReviewsController;
+use App\Http\Controllers\Api\V1\Reviews\SubmitReviewController;
 use App\Http\Controllers\Api\V1\Routes\CancelRouteController;
 use App\Http\Controllers\Api\V1\Routes\DiscoverRoutesController;
 use App\Http\Controllers\Api\V1\Routes\ListMyRoutesController;
@@ -230,3 +232,31 @@ Route::post('seat-requests/{requestId}/decline', DeclineSeatRequestController::c
     ->middleware('auth.token')
     ->where('requestId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
     ->name('seat-requests.decline');
+
+/*
+ * Reviews.
+ *
+ * One member's self-declared rating about one completed relationship. Not
+ * evidence that anybody boarded: every fact the service holds about a journey
+ * is the driver's own declaration, and nothing here claims otherwise.
+ *
+ * The seat request is the address, as the route is the address of its trip. It
+ * names exactly two people on exactly one journey, so the caller's side is
+ * derived rather than sent — a passenger cannot file a review as the driver.
+ * `{requestId}` carries the same UUIDv7 constraint as its neighbours, so a
+ * malformed id is an ordinary 404 rather than a 422 the contract does not
+ * describe, and the same answer as a request that is real but not the caller's.
+ *
+ * There is no endpoint for somebody else's reviews, no "reviews I wrote" feed
+ * and no aggregate: Phase 15 publishes no reputation, and a member reads only
+ * what was said about them, once the other side has written or the window has
+ * closed.
+ */
+Route::post('seat-requests/{requestId}/review', SubmitReviewController::class)
+    ->middleware('auth.token')
+    ->where('requestId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->name('seat-requests.review');
+
+Route::get('me/reviews', ListMyReviewsController::class)
+    ->middleware('auth.token')
+    ->name('me.reviews.index');

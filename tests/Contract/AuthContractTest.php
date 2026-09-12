@@ -101,6 +101,8 @@ final class AuthContractTest extends TestCase
             '/api/v1/routes/{routeId}/trip/abort',
             '/api/v1/routes/{routeId}/seat-requests',
             '/api/v1/me/seat-requests',
+            '/api/v1/seat-requests/{requestId}/review',
+            '/api/v1/me/reviews',
             '/api/v1/seat-requests/{requestId}/withdraw',
             '/api/v1/seat-requests/{requestId}/accept',
             '/api/v1/seat-requests/{requestId}/decline',
@@ -118,8 +120,8 @@ final class AuthContractTest extends TestCase
 
         // `routes` left this list in Phase 10, when route publication was
         // specified and then served; `profile` left it in Phase 11,
-        // `seat`/`requests` in Phase 13 and `trips` in Phase 14, each for the
-        // same reason. Everything still here belongs to a phase that has not
+        // `seat`/`requests` in Phase 13, `trips` in Phase 14 and `reviews` in
+        // Phase 15, each for the same reason. Everything still here belongs to a phase that has not
         // happened, and a path naming one would be describing an intention
         // rather than a service.
         //
@@ -130,7 +132,7 @@ final class AuthContractTest extends TestCase
         // three that shipped, which are singular and route-scoped; a guard that
         // passes for the wrong reason is worse than one that is gone.
         foreach ([
-            'reviews', 'messages',
+            'messages',
             'conversations', 'vehicles', 'safety', 'notifications',
             'verification', 'sessions', 'devices', 'register', 'login',
         ] as $absent) {
@@ -224,7 +226,7 @@ final class AuthContractTest extends TestCase
 
         self::assertSame([
             'Unauthenticated', 'Forbidden', 'ValidationFailed', 'NotFound', 'Conflict',
-            'SeatRequestConflict', 'TripConflict',
+            'SeatRequestConflict', 'TripConflict', 'ReviewConflict',
             'RateLimited', 'InternalError',
         ], array_keys($responses));
 

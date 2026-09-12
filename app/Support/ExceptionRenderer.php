@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Support;
 
+use App\Reviews\ReviewRefused;
 use App\SeatRequests\RefusalReason;
 use App\SeatRequests\SeatRequestRefused;
 use App\Trips\TripRefused;
@@ -59,6 +60,14 @@ final class ExceptionRenderer
             // rest do; folding them into one arm would make either domain's
             // next reason an edit to the other's mapping.
             $e instanceof TripRefused => [
+                ApiError::CONFLICT,
+                409,
+                ['reason' => $e->reason->value],
+            ],
+            // And beside both, for the same reason. All five review reasons
+            // are conflicts — none is a malformed request — so unlike a seat
+            // request there is no status to branch on, only a reason to carry.
+            $e instanceof ReviewRefused => [
                 ApiError::CONFLICT,
                 409,
                 ['reason' => $e->reason->value],

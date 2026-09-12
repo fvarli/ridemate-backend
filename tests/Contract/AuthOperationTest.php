@@ -260,6 +260,7 @@ final class AuthOperationTest extends TestCase
             '/api/v1/auth/refresh',
             '/api/v1/me',
             '/api/v1/me/profile',
+            '/api/v1/me/reviews',
             '/api/v1/me/routes',
             '/api/v1/me/seat-requests',
             '/api/v1/places',
@@ -272,6 +273,7 @@ final class AuthOperationTest extends TestCase
             '/api/v1/routes/{routeId}/trip/start',
             '/api/v1/seat-requests/{requestId}/accept',
             '/api/v1/seat-requests/{requestId}/decline',
+            '/api/v1/seat-requests/{requestId}/review',
             '/api/v1/seat-requests/{requestId}/withdraw',
         ], $served);
 

@@ -991,6 +991,126 @@ paths:
         '422':
           $ref: '#/components/responses/ValidationFailed'
 
+  /api/v1/seat-requests/{requestId}/review:
+    post:
+      operationId: submitReview
+      tags: [Reviews]
+      summary: Rate a completed journey
+      security:
+        - bearerAuth: []
+      description: |
+        One member's self-declared rating about one completed relationship.
+
+        **It is not evidence that anybody boarded.** Every fact RideMate holds
+        about a journey is the driver's own declaration — a route published, a
+        seat agreed, Start pressed, Complete pressed — and none of them proves a
+        passenger was in a car. Eligibility here is the narrowest rule the
+        service can actually check, and this endpoint claims nothing beyond it.
+
+        The seat request is the address: it names exactly two people on exactly
+        one journey, and **which side the caller is, is derived** rather than
+        sent. A member party to neither gets the same `404` as one naming a
+        request that does not exist.
+
+        A review may be submitted while the seat request is `accepted`, its
+        journey's trip is `completed`, and fourteen days have not passed since
+        `completed_at`. Route status is not consulted: withdrawing a plan says
+        nothing about a journey that was already made.
+
+        **Naturally idempotent on the client's id**, which is the review's
+        primary key. A retry after a lost response is the same review arriving
+        twice and answers `200` unchanged — including after the window has
+        closed, because identity is resolved before eligibility. One review per
+        party per relationship: a second under a fresh id is `409`.
+
+        A review cannot be edited or deleted, and none of this is published to
+        anybody but its subject.
+      parameters:
+        - $ref: '#/components/parameters/SeatRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewSubmission'
+      responses:
+        '201':
+          description: The review was recorded.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewEnvelope'
+        '200':
+          description: |
+            The same review, already recorded. A retry of one that landed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ReviewConflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /api/v1/me/reviews:
+    get:
+      operationId: listMyReviews
+      tags: [Reviews]
+      summary: What others have said about you
+      security:
+        - bearerAuth: []
+      description: |
+        Reviews about the caller, newest first — and **only the ones they are
+        entitled to read**.
+
+        A review is hidden from its subject until the other party writes one
+        too, or fourteen days pass from the journey's `completed_at`. Neither
+        half of that is stored: it is worked out from the rows themselves each
+        time somebody reads, so there is no release job and no release column.
+
+        **A hidden review is not in this list and does not occupy a place in
+        it.** The rule is part of the query rather than a filter applied
+        afterwards, so a hidden review cannot shorten a page and cannot be what
+        `next_cursor` names — which is what stops the shape of a page revealing
+        that somebody has written something you may not yet see.
+
+        A member's own reviews are not here: they wrote them, and can read them
+        from `my_review` on the relationship itself.
+
+        There is no count, no average and no distribution. There is also no
+        endpoint for anybody else's reviews.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of released reviews about the caller.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
   /api/v1/seat-requests/{requestId}/withdraw:
     post:
       operationId: withdrawSeatRequest
@@ -1225,6 +1345,22 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    ReviewConflict:
+      description: |
+        The relationship cannot be rated as asked.
+
+        `details.reason` says why, as a stable machine string a client maps to
+        its own approved copy. No `details.current_status` accompanies it: the
+        caller is a party to the relationship and can read its state from their
+        own listing, so naming it twice would be a second thing to keep in
+        agreement.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     RateLimited:
       description: |
         Too many attempts. Applies per number and per address; the response does
@@ -1433,6 +1569,7 @@ components:
                   anyOf:
                     - $ref: '#/components/schemas/SeatRequestRefusalReason'
                     - $ref: '#/components/schemas/TripRefusalReason'
+                    - $ref: '#/components/schemas/ReviewRefusalReason'
                 current_status:
                   $ref: '#/components/schemas/SeatRequestStatus'
               additionalProperties:
@@ -2328,6 +2465,294 @@ components:
         seat_request:
           $ref: '#/components/schemas/MySeatRequest'
 
+    Review:
+      type: object
+      additionalProperties: false
+      required: [id, rating, submitted_at]
+      description: |
+        A review the caller wrote themselves.
+
+        Three fields, and the caller already owns every one: this answers *did
+        it land, and what did I say*. There is no `reviewer_role` — the caller
+        knows which side they are, having opened the screen from their own
+        asking or their own journey.
+
+        **Nothing about the other side.** No counterpart id, rating, submission
+        state, release flag or deadline. A caller must not be able to tell "they
+        have not reviewed me" from "they have, and I may not see it yet":
+        knowing would bias the rating they are about to write, which is the
+        whole reason release waits for both sides or for the window.
+      properties:
+        id:
+          $ref: '#/components/schemas/ReviewId'
+        rating:
+          $ref: '#/components/schemas/Rating'
+        submitted_at:
+          type: string
+          format: date-time
+          description: |
+            When the member submitted it. A review is never edited, so this is
+            the row's creation — there is one instant and this is it.
+
+    MyReview:
+      oneOf:
+        - $ref: '#/components/schemas/Review'
+        - type: 'null'
+      description: |
+        The caller's own review of this relationship, or null.
+
+        **The key is always present and its value may be null**, which are
+        different things: a response without it is not this contract, and
+        reading absence as "not reviewed" would make an older backend claim
+        every relationship is still open to rate.
+
+        Null is also the answer when the counterpart has written one and the
+        caller has not. Nothing here distinguishes the two.
+
+    ReviewId:
+      type: string
+      format: uuid
+      description: |
+        The review's identifier, as the client generated it when submitting.
+        A UUIDv7, and the idempotency key: the same id is the same review.
+
+    Rating:
+      type: integer
+      minimum: 1
+      maximum: 5
+      description: |
+        One to five, whole.
+
+        Deliberately not a decimal. A fractional rating on a single review is an
+        invitation for some client to average them, and RideMate publishes no
+        aggregate at all — no average, no count, no distribution, not even to
+        the member the reviews are about.
+
+    ReviewEnvelope:
+      type: object
+      additionalProperties: false
+      required: [review]
+      properties:
+        review:
+          $ref: '#/components/schemas/Review'
+
+    ReviewSubmission:
+      type: object
+      additionalProperties: false
+      required: [id, rating]
+      description: |
+        Rating a relationship: one client-generated id and one number.
+
+        **Which side the caller is, is not theirs to say.** The server derives
+        it from the seat request, so a passenger cannot file a review as the
+        driver. There is no text field: Phase 15 is rating-only, because free
+        text with no reporting, moderation or deletion is an unmoderated channel
+        between two people who know each other's names and commute.
+      properties:
+        id:
+          $ref: '#/components/schemas/ReviewId'
+        rating:
+          $ref: '#/components/schemas/Rating'
+
+    ReceivedReview:
+      type: object
+      additionalProperties: false
+      required: [id, rating, submitted_at, reviewer, journey]
+      description: |
+        A released review, as the member it is about reads it.
+
+        **One member's self-declared rating about one completed relationship.**
+        Not evidence that anybody boarded, was picked up, or travelled — every
+        fact the service holds about a journey is the driver's own declaration.
+
+        The journey is attribution, not proof: a member holding several ratings
+        from the same person needs to know which shared journey each refers to.
+        It carries no identifier of any kind, because nothing on this screen
+        addresses a route, a trip or a seat request.
+      properties:
+        id:
+          $ref: '#/components/schemas/ReviewId'
+        rating:
+          $ref: '#/components/schemas/Rating'
+        submitted_at:
+          type: string
+          format: date-time
+        reviewer:
+          type: object
+          additionalProperties: false
+          required: [display_name, initials, role]
+          properties:
+            display_name:
+              type: string
+            initials:
+              type: string
+              description: |
+                The server's own. Turkish casing makes these a rule rather than
+                a formatting detail, so a client deriving them would be
+                authoring a rule the backend owns.
+            role:
+              $ref: '#/components/schemas/ReviewerRole'
+        journey:
+          type: object
+          additionalProperties: false
+          required: [origin, destination, departure_date, departure_time]
+          description: |
+            Which shared journey this rating belongs to. Labels rather than the
+            `Place` object every other surface uses: that object carries an id
+            which addresses a place in discovery, and this screen has no use
+            for one.
+          properties:
+            origin:
+              type: string
+            destination:
+              type: string
+            departure_date:
+              type: string
+              description: |
+                `YYYY-MM-DD`, and never null here. A recurring route cannot have
+                a trip, so every reviewable journey is one-off and dated.
+            departure_time:
+              $ref: '#/components/schemas/DepartureTime'
+
+    ReviewerRole:
+      type: string
+      enum: [driver, passenger]
+      description: |
+        Which side of the shared journey wrote it.
+
+        Sides of one seat request rather than kinds of member: the same account
+        is a driver on journeys it published and a passenger on journeys it
+        asked to join.
+
+    ReviewPage:
+      type: object
+      additionalProperties: false
+      required: [reviews, next_cursor]
+      description: |
+        One page of released reviews about the caller, newest first.
+
+        **No count and no average**, not even for the member they are about. A
+        number is the first half of a reputation, and the second half arrives
+        without anybody deciding to build it.
+
+        A review that has not been released is not in this list and does not
+        occupy a slot in it: the release rule is part of the query rather than a
+        filter applied afterwards, so a hidden review can neither shorten a page
+        nor be what `next_cursor` names.
+      properties:
+        reviews:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReceivedReview'
+        next_cursor:
+          oneOf:
+            - type: string
+            - type: 'null'
+
+    ReviewRefusalReason:
+      type: string
+      enum:
+        - seat_request_not_accepted
+        - trip_not_completed
+        - review_window_closed
+        - already_reviewed
+        - id_already_used
+      description: |
+        Why a review was refused, as a stable machine string.
+
+        **This is contract**: renaming one is a breaking change. All five arrive
+        with `409` and `conflict`, so the status distinguishes none of them —
+        which is exactly why the reason exists.
+
+        `seat_request_not_accepted` is not reducible to either neighbour. A
+        caller is a legitimate party to their own `pending`, `declined` or
+        `withdrawn` request, so a 404 would be wrong; and it is independent of
+        the journey, since a request can be declined on a route whose trip
+        completed, where `trip_not_completed` would be false.
+
+        `id_already_used` is spelled as `SeatRequestRefusalReason` spells it,
+        because it means the same thing on the same kind of create path.
+
+        There is deliberately no `self_review` (a member cannot hold an accepted
+        request on their own route), no `not_a_participant` (that is the
+        non-disclosing 404) and no `profile_required` (a reviewer necessarily
+        has a profile). A reason nothing can produce is worse than none.
+
+    MySeatRequestRow:
+      type: object
+      additionalProperties: false
+      required:
+        [id, status, requested_at, decided_at, withdrawn_at, route, my_review]
+      description: |
+        One of the caller's own askings **as the listing publishes it**:
+        `MySeatRequest` plus the review the caller has written about it.
+
+        Spelled out rather than composed, for the reason `MyRoute` is: every
+        schema here closes with `additionalProperties: false`, and under `allOf`
+        each branch validates alone, so the closed base rejects the field the
+        second branch adds. A contract test asserts this is `MySeatRequest` plus
+        `my_review` exactly, so a field added to one and not the other fails.
+
+        **Only the listing carries it.** Asking for a seat and withdrawing one
+        answer with `MySeatRequestEnvelope`, which does not — the field would be
+        permanently null there, and a wider surface for no reader.
+      properties:
+        id:
+          $ref: '#/components/schemas/SeatRequestId'
+        status:
+          $ref: '#/components/schemas/SeatRequestStatus'
+        requested_at:
+          type: string
+          format: date-time
+        decided_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        withdrawn_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        route:
+          $ref: '#/components/schemas/MySeatRequestRoute'
+        my_review:
+          $ref: '#/components/schemas/MyReview'
+
+    RouteSeatRequestRow:
+      type: object
+      additionalProperties: false
+      required:
+        [id, status, requested_at, decided_at, withdrawn_at, passenger, my_review]
+      description: |
+        One asking on the caller's own journey **as the listing publishes it**:
+        `RouteSeatRequest` plus the review the caller has written about it.
+
+        Accepting and declining answer with `RouteSeatRequestEnvelope`, which
+        does not carry it, for the same reason.
+      properties:
+        id:
+          $ref: '#/components/schemas/SeatRequestId'
+        status:
+          $ref: '#/components/schemas/SeatRequestStatus'
+        requested_at:
+          type: string
+          format: date-time
+        decided_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        withdrawn_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        passenger:
+          $ref: '#/components/schemas/SeatRequestPassenger'
+        my_review:
+          $ref: '#/components/schemas/MyReview'
+
     MySeatRequestPage:
       type: object
       additionalProperties: false
@@ -2338,7 +2763,7 @@ components:
         seat_requests:
           type: array
           items:
-            $ref: '#/components/schemas/MySeatRequest'
+            $ref: '#/components/schemas/MySeatRequestRow'
         next_cursor:
           oneOf:
             - type: string
@@ -2424,7 +2849,7 @@ components:
         seat_requests:
           type: array
           items:
-            $ref: '#/components/schemas/RouteSeatRequest'
+            $ref: '#/components/schemas/RouteSeatRequestRow'
         next_cursor:
           oneOf:
             - type: string
