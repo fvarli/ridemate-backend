@@ -1,17 +1,23 @@
 # RideMate Backend — Architecture
 
-> **Status:** Phase 12 complete. The service boots, connects to PostgreSQL with PostGIS,
+> **Status:** Phase 15 complete. The service boots, connects to PostgreSQL with PostGIS,
 > reports liveness and readiness, has one error contract, and is governed by a spec-first
 > OpenAPI document enforced by tests. **Authentication is real** (Phase 9: phone-first,
 > passwordless, rotating opaque credentials), **publication is real** (Phase 10: a member
 > publishes a journey, lists their own, and cancels one), **a member has a name** (Phase 11:
-> `display_name` and server-derived `initials`) and **discovery is real** (Phase 12: a member
+> `display_name` and server-derived `initials`), **discovery is real** (Phase 12: a member
 > finds somebody else's published journey between two catalogue endpoints — see
-> `decisions/0008-discovery-v1.md`).
+> `decisions/0008-discovery-v1.md`), **asking for a seat is real** (Phase 13), **whether a
+> journey was made is real** (Phase 14) and **reviews are real** (Phase 15: one rating per
+> party per completed relationship, released only when both have written or the window has
+> closed).
 >
-> Everything else a rider would recognise — seat requests, trips, messaging, reviews,
-> verification, Trust Score — does not exist here yet. Where the client still shows it, it is
-> drawing fixtures, and this document says so rather than implying coverage.
+> Everything else a rider would recognise — messaging, verification, Trust Score — does not
+> exist here yet. Where the client still shows it, it is drawing fixtures, and this document
+> says so rather than implying coverage.
+>
+> **Reviews are not reputation.** No average, no total, no distribution and no public profile
+> rating exists on either side. A rating is private feedback to the member it is about.
 
 ## Product framing
 
@@ -55,11 +61,13 @@ do not import each other, mirroring the client's test-enforced "features never i
 other" rule. But a module directory with no modules in it is a naming convention pretending
 to be an architecture, and a cross-module lint rule with zero modules enforces nothing.
 
-Three domains now exist, expressed as namespaces rather than a module framework:
-`App\Auth`, `App\Otp` (Phase 9) and `App\Routes` (Phase 10). The dependency arrow is
-one-way and shallow — `App\Routes` reads an authenticated account, and nothing in Phase 9
-knows routes exist. `app/Modules/` still does not, because moving three working namespaces
-into it would buy a directory name; it is worth revisiting when a genuine cycle appears
+Eight domains now exist, expressed as namespaces rather than a module framework:
+`App\Auth`, `App\Otp` (Phase 9), `App\Routes` and `App\Places` (Phase 10), `App\Profiles`
+(Phase 11), `App\SeatRequests` (Phase 13), `App\Trips` (Phase 14) and `App\Reviews`
+(Phase 15). The dependency arrow is still one-way and shallow — each later domain reads the
+earlier ones, and nothing in Phase 9 knows any of them exist. `app/Modules/` still does not,
+because moving working namespaces into it would buy a directory name; it is worth revisiting
+when a genuine cycle appears
 rather than when a third domain does.
 
 **No microservices, no message bus, no CQRS framework, no event sourcing, no Kubernetes.**
@@ -546,6 +554,159 @@ starts one. There is no location, GPS, map, navigation, realtime channel, pollin
 push notification, chat, SOS, attendance, boarding, no-show, review eligibility, rating, trust
 signal or cost anywhere in it.
 
+## Reviews — what one member says about one completed relationship
+
+A fifth truth, and the narrowest domain in the service. One member rates one seat request
+they were party to, once, from one to five. There is no text, no tags, no reply, no
+moderation state and no aggregate of any kind.
+
+**A review is a claim, not a record of events.** It says what one member thought of a journey
+the driver declared completed. It is not evidence that anybody boarded, was collected, or
+travelled — nothing in this service observes that — and no response, field or name in this
+domain may imply otherwise.
+
+**Reviews are private feedback, not reputation.** No average, no count, no distribution, no
+rank and no public profile rating is computed or stored anywhere, and a member's reviews are
+readable only by the member they are about. That is why there is no
+`GET /accounts/{id}/reviews` and no rating on `DiscoveredRoute`: a reputation surface would
+need an aggregate, and this service deliberately has none to give.
+
+### The table holds nothing it can derive
+
+`reviews` carries five columns: `id` (client-generated UUIDv7, also the idempotency key),
+`seat_request_id`, `reviewer_role`, `rating`, and timestamps. The unique constraint is
+`(seat_request_id, reviewer_role)` — one review per side per relationship — with check
+constraints pinning the role to `driver`/`passenger` and the rating to `1..5`.
+
+**There is no account column, and that is the point.** Both parties are already determined by
+the seat request: the passenger is `seat_requests.account_id`, the driver is
+`routes.account_id` for that request's route. Storing `reviewer_account_id` and
+`reviewee_account_id` beside the role would permit rows naming a party the seat request
+contradicts. Leaving them out makes such a row unrepresentable rather than merely rejected in
+application code — there is nowhere to write one.
+
+**No release state is stored.** There is no `release_at` and no `counterpart_reviewed_at`,
+because a review is released when the counterpart row exists or the window has closed, and
+both are already knowable at read time. Storing either would force the second submission to
+UPDATE the first — a lock and a transaction in a command that needs neither, and a second
+copy of a fact that can drift from the first. And there is no `submitted_at`: a review is
+immutable once written, so `created_at` **is** the moment it was submitted.
+
+`SchemaAllowlistTest` asserts the forbidden columns by name, so adding one fails a test
+rather than passing review.
+
+### Submitting
+
+`POST /api/v1/seat-requests/{requestId}/review`, with exactly two fields: `id` and `rating`.
+
+**The role is never sent.** Which side the caller is, is derived from the relationship by
+`App\Reviews\ReviewParticipants`. Letting a client say would let a passenger file a review
+as the driver.
+
+**Identity is checked before mutable eligibility**, the ordering `RequestSeat` and `StartTrip`
+already use. A caller who is not a party to the request gets `404`, not a refusal — so nobody
+can learn which request ids exist by trying to review them. Only once the caller is known to
+be a party does the command speak about the journey's state at all.
+
+**Idempotency is tier 1**: the client generates the review's own id, and the same id is the
+same review. A first create answers `201`; an exact replay of the same `{id, rating}` answers
+`200` with the review that already exists. A replay is answered even after the window has
+closed — the review landed, and reporting it as refused would be telling the client something
+false about work it completed. **The identity is the whole payload**, not the id alone: the
+same id carrying a different rating is `id_already_used`, because it describes a different
+review. No `Idempotency-Key` table is involved; see *Idempotency* in `api-conventions.md`.
+
+**No lock is taken.** Both preconditions are terminal — an accepted seat request and a
+completed trip never revert — so there is nothing for a concurrent writer to invalidate. The
+only race is two submissions under the same identity, which the unique constraint decides;
+the insert runs inside a savepoint so a unique violation can be classified and re-read rather
+than aborting the surrounding transaction.
+
+### Eligibility, and what it is not
+
+A review may be submitted when all of these hold, and the server is the only judge of them:
+
+1. the caller is a party to the seat request;
+2. the seat request is `accepted`;
+3. the route's trip is `completed`;
+4. now is before `trips.completed_at` + 14 days.
+
+**A cancelled route does not override a completed trip.** The two are independent truths: a
+driver may withdraw a plan after making the journey, and the journey still happened. Nothing
+in this domain consults `routes.status`.
+
+**The window is the server's arithmetic.** `App\Reviews\ReviewWindow` owns the fourteen days;
+no client computes it, and none is given the deadline to compute it from.
+
+### Refusals
+
+Five reasons, published at `error.details.reason` with `409 conflict`. Renaming one is a
+breaking change; clients map each to their own approved copy, because `message` is
+developer-facing English no client displays.
+
+| reason | means |
+|---|---|
+| `seat_request_not_accepted` | the caller is a party, but the asking was never accepted |
+| `trip_not_completed` | the journey was not reported as made |
+| `review_window_closed` | more than fourteen days have passed since it was completed |
+| `already_reviewed` | this caller has already rated this relationship, under another id |
+| `id_already_used` | that id exists and describes a different review |
+
+`seat_request_not_accepted` exists because `404` would be wrong and `trip_not_completed`
+would be false: a caller is a legitimate party to their own pending, declined or withdrawn
+request, and is entitled to be told which fact stopped them.
+
+There is no `self_review` — asking for a seat in your own car is already refused `own_route`,
+so the pairing cannot exist. There is no `not_a_participant`: that is the non-disclosing
+`404` above. `id_already_used` is spelled exactly as `App\SeatRequests\RefusalReason` spells
+it, because it means the same thing on the same kind of create path; the two vocabularies
+stay separate schemas, which is why `Error.details.reason` is `anyOf` rather than `oneOf`.
+
+### Release is a read-time predicate, not a state
+
+A review about a member becomes readable when **the counterpart review exists, or fourteen
+days have passed since the trip completed**. Both halves are one SQL predicate in
+`App\Reviews\ReleasedReviews`, applied inside the query.
+
+That placement is the whole design. Filtering after the fact would let unreleased rows
+consume page slots and cursor positions, so a member paging their feed could infer how many
+reviews they cannot see — which is exactly what the rule withholds. Rows that are not
+released are never candidates.
+
+**Nothing sweeps.** There is no scheduler, no queued job and no `release_at` to sweep; the
+window closing changes nothing in the database, it changes what the next read returns. The
+same discipline as Phase 10's absent `expired` status.
+
+### Where reviews are published
+
+On exactly three surfaces:
+
+* `GET /api/v1/me/reviews` — released reviews **about** the caller, newest first, cursor
+  paginated on `(created_at DESC, id DESC)`. Each row carries `id`, `rating`, `submitted_at`,
+  the reviewer's `display_name`, `initials` and `role`, and the journey's `origin`,
+  `destination`, `departure_date` and `departure_time`. The journey is attribution — it lets a
+  member tell two ratings from the same person apart — and carries **no identifier**: no seat
+  request, route, trip, account or place id, and no coordinates.
+* `my_review` on `MySeatRequest` (the passenger's own listing) and `RouteSeatRequest` (the
+  driver's incoming listing) — `id`, `rating`, `submitted_at`, or `null`. It answers *have I
+  already rated this*, and says nothing about the counterpart or about release.
+* The submission response itself, the same three fields.
+
+**Not** on the seat-request command responses, which share those payload classes but call
+`envelope()` rather than `page()`; not on `Route`, `MyRoute`, `DiscoveredRoute` or
+`TripEnvelope`. A contract test asserts the two listing schemas carry `my_review` exactly, so
+a field added to one and not the other fails.
+
+### What is not in this domain
+
+No aggregate, average, count, distribution, histogram, rank or trust contribution. No public
+profile review query. No text, tags, photos, reply or edit — a review is immutable, so there
+is no update endpoint and no `updated_at` semantics beyond the column. No moderation, report,
+appeal or hide. No notification that a review arrived or was released. No reviews for
+recurring journeys, because only a one-off route can have a trip. No attendance, boarding,
+no-show or presence signal anywhere near it, and nothing here is evidence that a journey was
+physically taken.
+
 ## Admin and operations
 
 The invite-only beta is explicitly human-in-the-loop: identity review, moderation, report
@@ -610,7 +771,7 @@ This is a product and regulatory-characterisation boundary, not a style preferen
 Whether driver-set cost sharing may ever become editable is a question for legal and
 product review, not for a schema author.
 
-## Roadmap — Phase 15 onward
+## Roadmap — Phase 16 onward
 
 In dependency order. Only what a phase earns is created.
 
@@ -621,13 +782,18 @@ narrowest discovery that needs nothing else. The remaining fields still name the
 rating needs reviews, a verified badge needs verification, a trip count needs the trip
 lifecycle, an approval rate needs seat requests, and a Trust Score needs all of them.
 
+**Phase 15 settled one of those by refusing it.** A rating needed reviews, and reviews now
+exist — but the match card's rating field stays withdrawn, because this service publishes no
+aggregate for it to show. What Phase 15 unblocked is a Trust Score input, not a number on a
+card.
+
 | Phase | Scope | Unblocks |
 |---|---|---|
 | 11 | **Profile minimum** ✅ | a name and initials — another member can finally be named honestly |
 | 12 | **Discovery** ✅ | exact-endpoint search over published plans, the first public feed with cursor pagination, and a card reduced to what the service knows. **Not** corridor matching: `route_occurrences`, the spatial query and its GiST index were re-examined and deliberately not built — see `decisions/0008-discovery-v1.md` |
 | 13 | **Seat requests** ✅ | seat availability became a real quantity and approval rate got a source. Expected to need tier-3 `Idempotency-Key` and did not: every command names a single target state |
 | 14 | **Trip lifecycle** ✅ | whether a journey was actually made — the fact a trip count would have to count. See *Trips* above |
-| 15 | **Reviews** | ratings |
+| 15 | **Reviews** ✅ | a rating a member can give and read — **not** a public one. No average, total or distribution is computed, so the match card's rating field stays withdrawn. See *Reviews* above |
 | 16 | **Verification** | the verified state and its badge |
 | 17 | **Trust Score** | depends on 13–16; the match card is finally whole |
 
@@ -642,11 +808,12 @@ until one is configured.
 
 ## The schema, and what is deliberately absent
 
-Eleven tables exist. Phase 9 created `accounts`, `auth_sessions`, `auth_tokens`,
+Twelve tables exist. Phase 9 created `accounts`, `auth_sessions`, `auth_tokens`,
 `otp_challenges`, and Laravel's own `cache` and `cache_locks`; Phase 10 added `places` and
 `routes`; Phase 11 added `profiles`. Phase 12 added none — discovery reads what publication
-and the profile already store. Phase 13 added `seat_requests` and Phase 14 added `trips`,
-one row per route. `SchemaAllowlistTest` asserts that list exactly, so a twelfth cannot
+and the profile already store. Phase 13 added `seat_requests`, Phase 14 added `trips`,
+one row per route, and Phase 15 added `reviews`, one row per party per relationship.
+`SchemaAllowlistTest` asserts that list exactly, so a thirteenth cannot
 arrive without editing it — the descendant of Phase 8's "no product table exists" guard,
 which was the same assertion with an empty list.
 
@@ -671,9 +838,10 @@ Still **not created**, each with a reason rather than an oversight:
   invented.
 * `idempotency_records` — Phase 10's two commands are idempotent by their own shape, so the
   table would have no writer. See *Idempotency* in `docs/api-conventions.md`.
-* `vehicles`, `seat_requests`, `participants`, `trips`, `trip_locations`, `conversations`,
-  `messages`, `reviews`, `trusted_contacts`, `safety_incidents`, `blocks`, `reports`,
-  `notifications` — later phases.
+* `vehicles`, `participants`, `trip_locations`, `conversations`, `messages`,
+  `trusted_contacts`, `safety_incidents`, `blocks`, `reports`, `notifications` — later
+  phases. (`seat_requests`, `trips` and `reviews` were on this list until Phases 13, 14 and
+  15 created them.)
 
 `app/Modules` does not exist either — see *Structure*. Three namespaced domains with a
 one-way dependency arrow do not yet justify moving working code into a framework for

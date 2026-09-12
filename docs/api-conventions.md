@@ -110,6 +110,11 @@ shape every later one follows:
   Describing *why* would describe the format.
 * `limit` is bounded by the contract, with a documented default, and the server may return
   fewer than asked.
+* **Rows the caller may not see are never candidates.** Phase 15's `GET /api/v1/me/reviews`
+  returns only released reviews, and the release predicate is applied *inside* the query
+  rather than to the page it produced. Filtering afterwards would let a withheld row consume
+  a slot and a cursor position, so a member paging their own feed could count what they are
+  not allowed to see. Where a feed hides anything, the hiding belongs in the SQL.
 
 ## Idempotency — three mechanisms, one chosen per command
 
@@ -132,6 +137,19 @@ server recognises it, and no second row appears.
 > `POST /api/v1/routes` takes a client-generated UUIDv7 as the route's `id`. See
 > *Route publication identity* in `docs/architecture.md` for what "the same resource" means
 > there, and what a mismatch answers.
+>
+> **Phase 15 added the second**: `POST /api/v1/seat-requests/{requestId}/review` takes the
+> review's own `id`. It could not be tier 2 — a rating is a value, not a target state, so
+> repeating the command with a different number is a different intent rather than the same
+> one observed again.
+>
+> **The identity is the whole payload, not the id alone.** The same id carrying a different
+> rating is `id_already_used`, because it names a review that already exists and describes
+> something else. That obliges the *client* as much as the server: an unresolved attempt must
+> freeze its id **and** its rating together and resend both byte-for-byte, because an id
+> reused with a changed value is a conflict the client itself created. A replay is answered
+> `200` even after the review window has closed — the row landed, and refusing to acknowledge
+> it would tell the client something false about work it completed.
 
 **2. Naturally idempotent target-state transition.** A transition with a single target state
 may rely on that state, when repeating the command cannot produce a second mutation. There is
@@ -154,9 +172,10 @@ caller meant. The header is unique per caller and endpoint, with the response re
 
 > Seat-request accept and decline were the expected first case. They shipped in Phase 13 and
 > did **not** need it: each names a single target state, so tier 2 was enough. Phase 14's
-> three trip commands are the same. **No endpoint uses tier 3**, so none is documented here
-> and `idempotency_records` is not created. Tier 3 is built by the command that first needs
-> it — twice now, the command that was going to need it did not.
+> three trip commands are the same, and Phase 15's review submission reached for tier 1
+> instead. **No endpoint uses tier 3**, so none is documented here and `idempotency_records`
+> is not created. Tier 3 is built by the command that first needs it — three times now, the
+> command that was going to need it did not.
 
 Choosing tier 1 or 2 is not a shortcut past tier 3. It is the observation that a command
 whose intent is fully named by a resource id, or whose repetition is a no-op, does not need a
