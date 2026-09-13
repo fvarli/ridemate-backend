@@ -50,14 +50,6 @@ final class SeatRequestRefused extends RuntimeException
         );
     }
 
-    public static function recurringRouteUnsupported(): self
-    {
-        return new self(
-            RefusalReason::RecurringRouteUnsupported,
-            'Seat requests are supported for one-off journeys only.',
-        );
-    }
-
     /**
      * Says the id is taken. Whose it is, and what it points at, are none of
      * this caller's business — so nothing is attached.

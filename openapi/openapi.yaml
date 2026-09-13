@@ -1558,14 +1558,19 @@ components:
               properties:
                 reason:
                   description: |
-                    Whichever domain refused. The two vocabularies are separate
-                    schemas rather than one merged enum, because neither domain
-                    should gain a say in the other's reasons — and `anyOf`
-                    rather than `oneOf`, because `recurring_route_unsupported`
-                    and `route_unavailable` are deliberately members of both.
-                    The same wire string for the same meaning is what keeps a
+                    Whichever domain refused. The vocabularies are separate
+                    schemas rather than one merged enum, because no domain
+                    should gain a say in another's reasons — and `anyOf` rather
+                    than `oneOf`, because some strings are deliberately members
+                    of more than one: `route_unavailable` in seat requests and
+                    trips, `id_already_used` in seat requests and reviews. The
+                    same wire string for the same meaning is what keeps a
                     client's mapping simple; `oneOf` would reject exactly those
-                    two for matching twice.
+                    for matching twice.
+
+                    `recurring_route_unsupported` was a third until Phase 16b
+                    let a passenger ask for a seat on a named day of a weekday
+                    plan. It is a trip reason only now.
                   anyOf:
                     - $ref: '#/components/schemas/SeatRequestRefusalReason'
                     - $ref: '#/components/schemas/TripRefusalReason'
@@ -2337,7 +2342,6 @@ components:
       enum:
         - profile_required
         - own_route
-        - recurring_route_unsupported
         - id_already_used
         - already_requested
         - route_unavailable

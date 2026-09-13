@@ -720,11 +720,19 @@ final class RouteContractTest extends TestCase
     /**
      * The two vocabularies overlap on purpose, and stay separate anyway.
      *
-     * `recurring_route_unsupported` and `route_unavailable` mean the same thing
-     * in both domains and therefore carry the same wire string. That overlap is
-     * exactly why `Error.details.reason` is `anyOf` and not `oneOf`: a value in
-     * both branches matches twice, which `oneOf` rejects. This asserts the
-     * overlap is real, so the choice cannot be undone as a tidy-up.
+     * `route_unavailable` means the same thing in both domains and therefore
+     * carries the same wire string. That overlap is exactly why
+     * `Error.details.reason` is `anyOf` and not `oneOf`: a value in both
+     * branches matches twice, which `oneOf` rejects. This asserts the overlap is
+     * real, so the choice cannot be undone as a tidy-up.
+     *
+     * `recurring_route_unsupported` was the second until Phase 16b. A passenger
+     * can now ask for a seat on a named day of a weekday plan, so no seat
+     * request can produce it and the seat vocabulary stopped publishing it —
+     * an enum advertising an outcome its surface cannot reach is a stale
+     * contract, not a compatibility guarantee. It remains a trip reason,
+     * because the legacy bodyless trip endpoints still take one-off routes
+     * only, and this asserts it is gone from exactly one of the two.
      */
     public function test_the_shared_reasons_are_documented_by_both_domains(): void
     {
@@ -737,9 +745,13 @@ final class RouteContractTest extends TestCase
         $seat = $schemas['SeatRequestRefusalReason']['enum'];
 
         self::assertSame(
-            ['recurring_route_unsupported', 'route_unavailable'],
+            ['route_unavailable'],
             array_values(array_intersect($trip, $seat)),
         );
+
+        // Still a trip reason, and no longer a seat-request one.
+        self::assertContains('recurring_route_unsupported', $trip);
+        self::assertNotContains('recurring_route_unsupported', $seat);
 
         /** @var array<string, mixed> $reason */
         $reason = $schemas['Error']['properties']['error']['properties']['details']['properties']['reason'];

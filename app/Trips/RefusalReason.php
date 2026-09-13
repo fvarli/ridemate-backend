@@ -14,12 +14,17 @@ namespace App\Trips;
  *
  * DELIBERATELY NOT `App\SeatRequests\RefusalReason`
  *
- * Two of these strings — `route_unavailable` and `recurring_route_unsupported`
- * — are also seat-request reasons, and that is intentional: the same wire
- * string for the same meaning is what makes a client's mapping simple. Sharing
- * one PHP enum across two domains would be a different thing entirely, and a
- * worse one: seat requests would own vocabulary trips depend on, and every
- * later addition to either would have to be argued in both.
+ * One of these strings — `route_unavailable` — is also a seat-request reason,
+ * and that is intentional: the same wire string for the same meaning is what
+ * makes a client's mapping simple. Sharing one PHP enum across two domains
+ * would be a different thing entirely, and a worse one: seat requests would own
+ * vocabulary trips depend on, and every later addition to either would have to
+ * be argued in both.
+ *
+ * `recurring_route_unsupported` used to be the second. Phase 16b let a
+ * passenger ask for a seat on a named day of a weekday plan, so the seat-request
+ * side can no longer produce it and stopped publishing it. It survives here
+ * because the legacy bodyless trip endpoints still accept one-off routes only.
  *
  * There is no `trip_already_started`. It would only ever have described a route
  * cancellation refused because a trip exists, and that refusal is unreachable:

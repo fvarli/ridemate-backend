@@ -28,15 +28,6 @@ enum RefusalReason: string
     case OwnRoute = 'own_route';
 
     /**
-     * Phase 13 v1 accepts one-off journeys only.
-     *
-     * A weekday plan has no single departure to hold a seat on, and inventing
-     * capacity for an indefinite plan is what `route_occurrences` was deferred
-     * to avoid.
-     */
-    case RecurringRouteUnsupported = 'recurring_route_unsupported';
-
-    /**
      * The supplied request id already identifies somebody else's asking, or the
      * same member's asking about a different journey.
      *
