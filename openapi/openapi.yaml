@@ -2957,7 +2957,7 @@ components:
       required:
         [id, origin, destination, recurrence, departure_date, departure_time,
          timezone, departure_state, seats_offered, rules, driver,
-         my_seat_request]
+         my_seat_requests]
       description: |
         A published journey as another member sees it.
 
@@ -2996,31 +2996,53 @@ components:
           $ref: '#/components/schemas/RideRules'
         driver:
           $ref: '#/components/schemas/DiscoveredDriver'
-        my_seat_request:
-          oneOf:
-            - $ref: '#/components/schemas/MySeatRequestSummary'
-            - type: 'null'
+        my_seat_requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscoverySeatRequestSummary'
           description: |
-            **The caller's own** seat request on this journey, or null if they
-            have not asked.
+            **The caller's own** seat requests on this route's journeys, earliest
+            service date first. Always present, and empty when they have asked
+            about none.
 
             Never anybody else's, and never a count: this is the one piece of
             per-viewer state on an otherwise identical projection, and it is here
             so a client can render the truth after a restart rather than offering
             to ask again and learning otherwise from a `409`.
 
-            At most one exists — a member may create one seat request per journey
-            for that journey's lifetime — so a terminal status here never becomes
-            requestable again.
+            **A list because a route is a plan.** A journey is a route on a date,
+            so a member may hold one asking for Monday and another for Tuesday on
+            the same recurring plan. A one-off route carries at most one entry.
+            Nothing may collapse this to a single value: the `service_date` is
+            what says which journey a status belongs to.
 
-    MySeatRequestSummary:
+            **Only journeys that can still be asked about appear.** A recurring
+            plan accumulates askings behind it and nothing deletes them, but a
+            departed day, a day the route does not run, and a day beyond the
+            request horizon are all absent here — so every entry describes a
+            journey the member could still act on. Past askings are read from
+            `GET /api/v1/me/seat-requests`, which is where a member's own history
+            lives.
+
+            Every status appears, `declined` and `withdrawn` included: a card must
+            show that this member already asked and was answered, rather than
+            offering to ask again as though nothing had happened.
+
+    DiscoverySeatRequestSummary:
       type: object
       additionalProperties: false
-      required: [id, status]
+      required: [service_date, id, status]
       description: |
-        The smallest useful reference to the caller's own asking: enough to say
-        what state it is in and to address it, and nothing more.
+        The smallest useful reference to one of the caller's own askings: which
+        journey it is for, enough to address it, and what state it is in.
       properties:
+        service_date:
+          allOf:
+            - $ref: '#/components/schemas/DepartureDate'
+          description: |
+            Which of the route's journeys this asking is for. It is what makes
+            the entry addressable as a journey rather than as a route, and two
+            entries on one route differ by nothing else.
         id:
           $ref: '#/components/schemas/SeatRequestId'
         status:

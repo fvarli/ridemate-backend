@@ -481,7 +481,7 @@ final class SeatRequestEndpointTest extends TestCase
 
     // ----------------------------------------------------------- discovery
 
-    public function test_discovery_says_null_before_the_caller_has_asked(): void
+    public function test_discovery_is_empty_before_the_caller_has_asked(): void
     {
         [$driver] = $this->publishedJourney();
         $passenger = $this->member('+905322220001', 'Ayşe Demir');
@@ -489,7 +489,7 @@ final class SeatRequestEndpointTest extends TestCase
         $this->discover($passenger)
             ->assertStatus(200)
             ->assertJsonCount(1, 'routes')
-            ->assertJsonPath('routes.0.my_seat_request', null);
+            ->assertJsonPath('routes.0.my_seat_requests', []);
     }
 
     /**
@@ -507,8 +507,13 @@ final class SeatRequestEndpointTest extends TestCase
 
         $this->discover($passenger)
             ->assertStatus(200)
-            ->assertJsonPath('routes.0.my_seat_request.id', $this->id(1))
-            ->assertJsonPath('routes.0.my_seat_request.status', 'pending');
+            ->assertJsonCount(1, 'routes.0.my_seat_requests')
+            ->assertJsonPath('routes.0.my_seat_requests.0.id', $this->id(1))
+            ->assertJsonPath('routes.0.my_seat_requests.0.status', 'pending')
+            ->assertJsonPath(
+                'routes.0.my_seat_requests.0.service_date',
+                CarbonImmutable::now()->addDays(3)->format('Y-m-d'),
+            );
     }
 
     public function test_a_terminal_request_still_shows_in_discovery(): void
@@ -518,10 +523,10 @@ final class SeatRequestEndpointTest extends TestCase
         $this->ask($passenger, $routeId, 1)->assertStatus(201);
         $this->postJson($this->withdraw(1), [], $passenger)->assertStatus(200);
 
-        // Lifetime uniqueness means this journey can never be asked about
-        // again, so the card must not offer to.
+        // Dated uniqueness means THIS journey can never be asked about again,
+        // so the card must not offer to.
         $this->discover($passenger)
-            ->assertJsonPath('routes.0.my_seat_request.status', 'withdrawn');
+            ->assertJsonPath('routes.0.my_seat_requests.0.status', 'withdrawn');
     }
 
     public function test_another_members_request_never_appears_as_the_callers(): void
@@ -533,7 +538,125 @@ final class SeatRequestEndpointTest extends TestCase
 
         $this->discover($mine)
             ->assertStatus(200)
-            ->assertJsonPath('routes.0.my_seat_request', null);
+            ->assertJsonPath('routes.0.my_seat_requests', []);
+    }
+
+    /**
+     * THE REASON THIS FIELD BECAME A LIST.
+     *
+     * One plan, two days, two askings. Collapsed to a single value the card
+     * would report one day's status as though it were the plan's.
+     */
+    public function test_discovery_carries_every_day_the_caller_asked_about(): void
+    {
+        [, $routeId] = $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        $first = $this->weekday(1);
+        $second = $this->weekday(2);
+
+        $this->ask($passenger, $routeId, 1, $second)->assertStatus(201);
+        $this->ask($passenger, $routeId, 2, $first)->assertStatus(201);
+
+        /** @var array{routes: list<array<string, mixed>>} $body */
+        $body = $this->discover($passenger)->assertStatus(200)->json();
+
+        self::assertSame(
+            [
+                ['service_date' => $first, 'id' => $this->id(2), 'status' => 'pending'],
+                ['service_date' => $second, 'id' => $this->id(1), 'status' => 'pending'],
+            ],
+            $body['routes'][0]['my_seat_requests'],
+            'the askings were not the caller\'s two days, earliest first',
+        );
+    }
+
+    /**
+     * CARRIES WEIGHT. The order is the contract's, not the insertion order.
+     *
+     * The second day was asked about first above; this pins that the answer is
+     * sorted by service date rather than by whichever row was written first.
+     */
+    public function test_the_askings_are_ordered_by_service_date(): void
+    {
+        [, $routeId] = $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        foreach ([3, 1, 2] as $position => $nth) {
+            $this->ask($passenger, $routeId, $position + 1, $this->weekday($nth))
+                ->assertStatus(201);
+        }
+
+        /** @var array{routes: list<array<string, mixed>>} $body */
+        $body = $this->discover($passenger)->json();
+
+        /** @var list<array<string, string>> $mine */
+        $mine = $body['routes'][0]['my_seat_requests'];
+
+        self::assertSame(
+            [$this->weekday(1), $this->weekday(2), $this->weekday(3)],
+            array_column($mine, 'service_date'),
+        );
+    }
+
+    /**
+     * CARRIES WEIGHT. A departed day does not ride along on a plan that runs on.
+     *
+     * A recurring plan accumulates askings behind it and nothing deletes them.
+     * Yesterday's row on a card offering today's journey would be a state the
+     * member cannot act on, printed where a live one belongs.
+     */
+    public function test_a_departed_day_does_not_reach_discovery(): void
+    {
+        [, $routeId] = $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        $soon = $this->weekday(1);
+        $later = $this->weekday(2);
+        $this->ask($passenger, $routeId, 1, $soon)->assertStatus(201);
+        $this->ask($passenger, $routeId, 2, $later)->assertStatus(201);
+
+        // Past the first day's departure, still before the second's.
+        $this->moveClockTo($soon, '09:00');
+
+        // A fresh credential, because the clock moved further than an access
+        // token lives. Signing in again is what a member would have done too;
+        // reusing the stale bearer would test token expiry instead.
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        /** @var array{routes: list<array<string, mixed>>} $body */
+        $body = $this->discover($passenger)->assertStatus(200)->json();
+
+        /** @var list<array<string, string>> $mine */
+        $mine = $body['routes'][0]['my_seat_requests'];
+
+        self::assertSame([$later], array_column($mine, 'service_date'));
+    }
+
+    /**
+     * CARRIES WEIGHT. One route's askings never appear on another's card.
+     */
+    public function test_an_asking_never_appears_on_another_routes_card(): void
+    {
+        $driver = $this->member('+905321110000', 'İrem Yılmaz');
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        [, $one] = $this->publishedJourney(driver: $driver, n: 1);
+        $this->publishedJourney(driver: $driver, n: 2);
+        $this->ask($passenger, $one, 1)->assertStatus(201);
+
+        /** @var array{routes: list<array<string, mixed>>} $body */
+        $body = $this->discover($passenger)->json();
+
+        $asked = [];
+        foreach ($body['routes'] as $route) {
+            /** @var list<array<string, string>> $mine */
+            $mine = $route['my_seat_requests'];
+            $asked[(string) $route['id']] = array_column($mine, 'id');
+        }
+
+        self::assertSame([$this->id(1)], $asked[$one]);
+        self::assertSame([], $asked[$this->routeId(2)]);
     }
 
     /**
@@ -561,6 +684,31 @@ final class SeatRequestEndpointTest extends TestCase
         self::assertSame($single, $many, 'discovery queries grew with the page');
     }
 
+    /**
+     * CARRIES WEIGHT. Nor per DAY, which is the new way to get an N+1.
+     *
+     * One recurring plan the caller has asked about on several days must cost
+     * the same as one they asked about once. A lookup that consulted the route
+     * per asking, or re-read the route to learn its recurrence, would grow here
+     * while the page-size test above stayed flat.
+     */
+    public function test_discovery_does_not_query_per_asked_day(): void
+    {
+        [, $routeId] = $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        $this->ask($passenger, $routeId, 1, $this->weekday(1))->assertStatus(201);
+        $one = $this->queriesFor(fn () => $this->discover($passenger));
+
+        foreach ([2, 3, 4] as $n) {
+            $this->ask($passenger, $routeId, $n, $this->weekday($n))->assertStatus(201);
+        }
+
+        $many = $this->queriesFor(fn () => $this->discover($passenger));
+
+        self::assertSame($one, $many, 'discovery queries grew with the asked days');
+    }
+
     // ------------------------------------------------------------- fixtures
 
     /**
@@ -583,6 +731,20 @@ final class SeatRequestEndpointTest extends TestCase
             ],
             $headers,
         );
+    }
+
+    /**
+     * Move the clock to a wall-clock moment in the pilot's zone.
+     *
+     * Named around the clock rather than `travelTo`, which Laravel's own
+     * time-travel helper already owns and which this would otherwise shadow.
+     */
+    private function moveClockTo(string $day, string $time): void
+    {
+        $timezone = config('ridemate.pilot.timezone');
+        self::assertIsString($timezone);
+
+        $this->travelTo(CarbonImmutable::parse("$day $time", $timezone));
     }
 
     /** The [$nth] weekday strictly after today, in the pilot's zone. */

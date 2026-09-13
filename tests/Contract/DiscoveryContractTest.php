@@ -74,9 +74,9 @@ final class DiscoveryContractTest extends TestCase
                 'quiet' => false,
             ],
             'driver' => ['display_name' => 'İrem Yılmaz', 'initials' => 'İY'],
-            // Present on every result from Phase 13, and null for the common
-            // case: the caller has not asked about this journey.
-            'my_seat_request' => null,
+            // Present on every result from Phase 13, and empty for the common
+            // case: the caller has asked about none of this plan's journeys.
+            'my_seat_requests' => [],
         ];
     }
 
@@ -198,6 +198,105 @@ final class DiscoveryContractTest extends TestCase
         }
     }
 
+    /**
+     * CARRIES WEIGHT. A plan's journeys are many, and the contract says so.
+     */
+    public function test_a_result_carries_one_entry_per_dated_asking(): void
+    {
+        $this->assertValidates(
+            ['my_seat_requests' => [
+                [
+                    'service_date' => '2026-09-14',
+                    'id' => '01991d00-0000-7000-8000-000000000001',
+                    'status' => 'pending',
+                ],
+                [
+                    'service_date' => '2026-09-15',
+                    'id' => '01991d00-0000-7000-8000-000000000002',
+                    'status' => 'declined',
+                ],
+            ]] + $this->discovered(),
+            'DiscoveredRoute',
+        );
+    }
+
+    /**
+     * CARRIES WEIGHT. Every entry says which journey it is for.
+     *
+     * A summary without a date would be addressable as a route, and a client
+     * holding two of them could not tell which day either belonged to.
+     */
+    public function test_an_asking_without_a_service_date_is_refused(): void
+    {
+        $this->assertRejects(
+            ['my_seat_requests' => [[
+                'id' => '01991d00-0000-7000-8000-000000000001',
+                'status' => 'pending',
+            ]]] + $this->discovered(),
+            'DiscoveredRoute',
+            'the contract admitted an asking with no service date',
+        );
+    }
+
+    /**
+     * CARRIES WEIGHT. The summary is three fields and nothing else.
+     */
+    public function test_the_asking_summary_admits_nothing_further(): void
+    {
+        /** @var array<string, mixed> $schema */
+        $schema = self::contractDocument()['components']['schemas']['DiscoverySeatRequestSummary'];
+
+        self::assertSame(
+            ['service_date', 'id', 'status'],
+            array_keys($schema['properties']),
+        );
+        self::assertSame(['service_date', 'id', 'status'], $schema['required']);
+        self::assertFalse($schema['additionalProperties']);
+
+        foreach ([
+            'account_id' => '00000000-0000-7000-8000-000000000001',
+            'route_id' => '00000000-0000-7000-8000-000000000002',
+            'requested_at' => '2026-09-08T09:41:00+00:00',
+            'passenger' => ['display_name' => 'Ayşe'],
+            'seats' => 1,
+        ] as $key => $value) {
+            $this->assertRejects(
+                ['my_seat_requests' => [[$key => $value] + [
+                    'service_date' => '2026-09-14',
+                    'id' => '01991d00-0000-7000-8000-000000000001',
+                    'status' => 'pending',
+                ]]] + $this->discovered(),
+                'DiscoveredRoute',
+                "the contract admitted an asking `$key`, which no discovery result may carry",
+            );
+        }
+    }
+
+    /**
+     * CARRIES WEIGHT. The singleton is gone, not deprecated beside its successor.
+     *
+     * A document that still admitted `my_seat_request` would let a client keep
+     * reading one journey's status off a plan that has many, and be right about
+     * whichever day the server happened to pick.
+     */
+    public function test_the_singleton_asking_is_no_longer_admitted(): void
+    {
+        /** @var array<string, mixed> $schemas */
+        $schemas = self::contractDocument()['components']['schemas'];
+
+        self::assertArrayNotHasKey('MySeatRequestSummary', $schemas);
+        self::assertArrayNotHasKey(
+            'my_seat_request',
+            $schemas['DiscoveredRoute']['properties'],
+        );
+
+        $this->assertRejects(
+            ['my_seat_request' => null] + $this->discovered(),
+            'DiscoveredRoute',
+            'the contract still admitted the retired singleton `my_seat_request`',
+        );
+    }
+
     public function test_the_page_admits_nothing_beside_its_two_fields(): void
     {
         $this->assertRejects(
@@ -218,6 +317,7 @@ final class DiscoveryContractTest extends TestCase
             $schemas['DiscoveryPage'],
             $schemas['DiscoveredRoute'],
             $schemas['DiscoveredDriver'],
+            $schemas['DiscoverySeatRequestSummary'],
         ]);
         self::assertIsString($encoded);
 

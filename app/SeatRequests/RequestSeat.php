@@ -83,8 +83,11 @@ final class RequestSeat
 
             $route = $this->eligibleRoute($passenger, $routeId, $now);
             // Decided under the route lock, with everything it depends on read
-            // inside it: the recurrence, the clock and the horizon.
-            $journey = $this->serviceDate($route, $serviceDate, $now);
+            // inside it: the recurrence, the clock and the horizon. The rule is
+            // `RequestableJourney`'s rather than this command's, because
+            // discovery asks the same question about the same days and the two
+            // answers must not be able to differ.
+            $journey = RequestableJourney::resolve($route, $serviceDate, $now);
 
             try {
                 // A SAVEPOINT. PostgreSQL aborts the transactional scope a
@@ -207,61 +210,6 @@ final class RequestSeat
         }
 
         return $route;
-    }
-
-    /**
-     * Which dated journey this asking is for.
-     *
-     * A ROUTE IS A PLAN; AN ASKING IS FOR ONE OF ITS DAYS
-     *
-     * A one-off route has a single day, so the caller need not name it and
-     * older clients do not — but if they do, it must be that day. A plan has
-     * many, so the day is required and is checked against three separate
-     * questions, each with its own answer: does the route run then, is it
-     * inside the horizon, and has it already left.
-     *
-     * Every check is made here, under the route lock, against values read
-     * inside it. All of them reuse the route's own departure semantics rather
-     * than doing arithmetic of their own — one definition of a weekday, one of
-     * the route's today, one of when a dated journey leaves.
-     */
-    private function serviceDate(
-        Route $route,
-        ?CarbonImmutable $named,
-        ?CarbonImmutable $now,
-    ): CarbonImmutable {
-        $departure = $route->departure();
-
-        if ($route->recurrence === Recurrence::Once) {
-            $only = $route->soleServiceDate();
-
-            if ($named !== null && $named->format('Y-m-d') !== $only->format('Y-m-d')) {
-                throw ServiceDateRefused::notThisRoutesDay($named);
-            }
-
-            // Departure is already the eligibility check above for a one-off
-            // route, which answers 404 rather than naming a date — Phase 13's
-            // behaviour, unchanged.
-            return $only;
-        }
-
-        if ($named === null) {
-            throw ServiceDateRefused::missing();
-        }
-
-        if (! $departure->runsOn($named)) {
-            throw ServiceDateRefused::notAServiceDate($named);
-        }
-
-        if (! SeatRequestHorizon::admits($departure, $named, $now)) {
-            throw ServiceDateRefused::beyondHorizon($named);
-        }
-
-        if ($departure->hasDeparted($named, $now)) {
-            throw ServiceDateRefused::alreadyDeparted($named);
-        }
-
-        return $named;
     }
 
     private function insert(

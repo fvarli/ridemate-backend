@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\V1\Routes;
 use App\Auth\AuthContext;
 use App\Http\Requests\DiscoverRoutesRequest;
 use App\Http\Responses\DiscoveryPayload;
+use App\Models\Route;
 use App\Routes\DiscoveredRoute;
 use App\Routes\DiscoverRoutes;
 use App\SeatRequests\MySeatRequestLookup;
@@ -44,15 +45,20 @@ final class DiscoverRoutesController
         );
 
         // After the page is settled, never during the fill scan: one query for
-        // the ids that actually survived, rather than one per candidate looked
-        // at or one per route returned.
-        $routeIds = array_map(
-            static fn (DiscoveredRoute $found): string => $found->route->id,
+        // the routes that actually survived, rather than one per candidate
+        // looked at or one per route returned.
+        //
+        // The routes themselves are handed over, not just their ids: which of
+        // the caller's askings are still offerable depends on each route's own
+        // recurrence, timezone and departure, and the page has already loaded
+        // every one of them.
+        $routes = array_map(
+            static fn (DiscoveredRoute $found): Route => $found->route,
             $page->routes,
         );
 
         return new JsonResponse(
-            DiscoveryPayload::page($page, $mine->forRoutes($caller, $routeIds)),
+            DiscoveryPayload::page($page, $mine->forRoutes($caller, $routes)),
         );
     }
 }

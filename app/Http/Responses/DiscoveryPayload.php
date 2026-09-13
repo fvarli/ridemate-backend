@@ -38,8 +38,9 @@ use Carbon\CarbonImmutable;
 final class DiscoveryPayload
 {
     /**
-     * @param  array<string, SeatRequest>  $mine  the caller's own asking per route id,
-     *                                            resolved in one query for this page only
+     * @param  array<string, list<SeatRequest>>  $mine  the caller's own askings per route
+     *                                                  id, resolved in one query for this
+     *                                                  page only
      * @return array{routes: list<array<string, mixed>>, next_cursor: string|null}
      */
     public static function page(
@@ -50,7 +51,7 @@ final class DiscoveryPayload
         $routes = [];
 
         foreach ($page->routes as $found) {
-            $routes[] = self::from($found, $mine[$found->route->id] ?? null, $now);
+            $routes[] = self::from($found, $mine[$found->route->id] ?? [], $now);
         }
 
         return [
@@ -63,11 +64,12 @@ final class DiscoveryPayload
     }
 
     /**
+     * @param  list<SeatRequest>  $mine
      * @return array<string, mixed>
      */
     private static function from(
         DiscoveredRoute $found,
-        ?SeatRequest $mine,
+        array $mine,
         ?CarbonImmutable $now,
     ): array {
         $route = $found->route;
@@ -97,16 +99,25 @@ final class DiscoveryPayload
                 'display_name' => $found->driver->display_name,
                 'initials' => $found->driver->initials(),
             ],
-            // The caller's OWN asking about this journey, and nothing else
-            // about anybody else's. Without it the card would offer to request
-            // a seat again after the app restarts — the server already knows
-            // it cannot, and a screen must not offer an action the server has
-            // already ruled out. Lifetime uniqueness means zero or one, so a
-            // terminal state here never becomes requestable again.
-            'my_seat_request' => $mine === null ? null : [
-                'id' => $mine->id,
-                'status' => $mine->status->value,
-            ],
+            // The caller's OWN askings about this route's still-offerable
+            // journeys, and nothing about anybody else's. Without them the card
+            // would offer to request a seat again after the app restarts — the
+            // server already knows it cannot, and a screen must not offer an
+            // action the server has already ruled out.
+            //
+            // A LIST, BECAUSE A PLAN HAS DAYS. One entry per dated journey the
+            // caller has asked about, earliest first, and empty when they have
+            // asked about none. A one-off route can carry at most one; nothing
+            // reading this may collapse it back to a single value, because the
+            // day is what says which journey a status belongs to.
+            'my_seat_requests' => array_map(
+                static fn (SeatRequest $request): array => [
+                    'service_date' => $request->service_date->format('Y-m-d'),
+                    'id' => $request->id,
+                    'status' => $request->status->value,
+                ],
+                $mine,
+            ),
         ];
     }
 }
