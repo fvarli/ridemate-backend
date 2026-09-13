@@ -22,15 +22,18 @@ use Illuminate\Support\Collection;
  *
  * The projections render a page of rows from an eager-loaded relation, and a
  * query per row would turn one read into N. The date is applied to what is
- * already loaded. While both recurrence guards stand, that collection holds at
- * most one trip per route anyway.
+ * already loaded. Since Phase 16b that collection may hold several trips —
+ * one per date a recurring plan has been driven on — so naming the date is the
+ * whole of the method rather than a formality over a collection of one.
  *
- * NULL MEANS TWO THINGS, AND THE SURFACES HAVE ALWAYS CONFLATED THEM
+ * NULL NO LONGER MEANS TWO THINGS
  *
- * A journey that was never made, and a plan that has no single journey to look
- * for. Both render `not_started`, which is what `MyRoute` has published for a
- * weekday plan since Phase 14. Phase 16b separates them: a plan stops carrying
- * a trip at all, and its dated journeys are addressed on their own.
+ * It did: a journey that was never made, and a plan with no single journey to
+ * look for, both rendered `not_started`. Phase 16b separated them. The only
+ * caller left is `MyRoutePayload`, which now asks this ONLY for a one-off route
+ * — so null here means exactly one thing again, a journey nobody started. A
+ * plan's `trip` is null on that surface without consulting this at all, and its
+ * dated journeys are addressed through `App\Journeys` instead.
  */
 final class TripOnServiceDate
 {

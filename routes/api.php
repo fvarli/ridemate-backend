@@ -6,6 +6,8 @@ use App\Http\Controllers\Api\V1\Auth\LogoutController;
 use App\Http\Controllers\Api\V1\Auth\RefreshController;
 use App\Http\Controllers\Api\V1\Auth\RequestPasscodeController;
 use App\Http\Controllers\Api\V1\Auth\VerifyPasscodeController;
+use App\Http\Controllers\Api\V1\Journeys\ListMyJourneysController;
+use App\Http\Controllers\Api\V1\Journeys\ShowJourneyController;
 use App\Http\Controllers\Api\V1\MeController;
 use App\Http\Controllers\Api\V1\Profiles\SaveProfileController;
 use App\Http\Controllers\Api\V1\Profiles\ShowProfileController;
@@ -146,6 +148,36 @@ Route::get('routes/discover', DiscoverRoutesController::class)
 Route::get('me/routes', ListMyRoutesController::class)
     ->middleware('auth.token')
     ->name('me.routes.index');
+
+/*
+ * The driver's own dated journeys.
+ *
+ * A journey is a route on a service date, and these two reads are the only
+ * places that name one. There is no journey id and no occurrence resource: the
+ * pair IS the identity, so the addressed read spells it out in the path rather
+ * than handing out a second name for the same thing.
+ *
+ * The feed is bounded — today, plus anything still under way — and the addressed
+ * read is how any other day is reached. Neither is a trip command: Start,
+ * Complete and Abort are still route-scoped and still refuse a recurring plan.
+ *
+ * `{serviceDate}` is constrained to the shape of a calendar day so a malformed
+ * one never matches the route at all and becomes an ordinary 404 — the same
+ * answer as a day the route does not run on, and as somebody else's route. The
+ * shape is all the constraint can check; whether it is a real date is
+ * `App\Journeys\ServiceDate`'s to say, and it answers 404 too.
+ *
+ * Not throttled, for the same reason the other authenticated reads are not.
+ */
+Route::get('me/journeys', ListMyJourneysController::class)
+    ->middleware('auth.token')
+    ->name('me.journeys.index');
+
+Route::get('routes/{routeId}/journeys/{serviceDate}', ShowJourneyController::class)
+    ->middleware('auth.token')
+    ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->where('serviceDate', '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+    ->name('routes.journeys.show');
 
 Route::post('routes/{routeId}/cancel', CancelRouteController::class)
     ->middleware('auth.token')

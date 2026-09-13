@@ -626,6 +626,119 @@ paths:
         '422':
           $ref: '#/components/responses/ValidationFailed'
 
+  /api/v1/me/journeys:
+    get:
+      operationId: listMyJourneys
+      tags: [Journeys]
+      summary: The dated journeys the caller can act on now
+      security:
+        - bearerAuth: []
+      description: |
+        A journey is a route on a service date. This lists the ones the caller,
+        as the driver, can act on **now**, newest service date first.
+
+        A journey is included when either is true:
+
+        - **It is today's.** The caller owns the route, the route is
+          `published`, and the route runs on today — today read in *that route's*
+          timezone, not the server's. It appears whatever its trip says,
+          including when no trip exists, because a journey still to be started is
+          the reason this feed exists.
+        - **It is still under way.** A trip of the caller's is `in_progress`, on
+          any service date, whatever the route's status has since become. Without
+          this a journey that crossed midnight would disappear from the driver's
+          hands at the moment they still have to end it, and so would one whose
+          plan was cancelled while it was running.
+
+        A journey that is both appears **once**.
+
+        **This is not trip history, and not "upcoming journeys".** Yesterday's
+        completed, aborted or never-started journeys are absent, and so is
+        tomorrow's. Any other day is read directly with
+        `GET /api/v1/routes/{routeId}/journeys/{serviceDate}`; there is no
+        parameter here that widens the feed.
+
+        **Cursor pagination, not offset**, over `(service_date, route_id)`
+        descending. That order is deterministic, but it is not a global
+        chronology: routes carry their own timezones, so two journeys on the
+        same service date did not necessarily happen at the same time, and
+        nothing here claims they did.
+
+        The cursor is **opaque** and belongs to this feed alone. One from
+        another list is refused rather than resumed.
+
+        No totals and no counts: a keyset feed does not know how many rows are
+        behind it without counting them, and a number nobody can act on is not
+        worth a second query.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of the caller's dated journeys.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JourneyPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /api/v1/routes/{routeId}/journeys/{serviceDate}:
+    get:
+      operationId: showJourney
+      tags: [Journeys]
+      summary: One dated journey of the caller's own route
+      security:
+        - bearerAuth: []
+      description: |
+        The journey a route makes on one named day, as its own driver sees it.
+
+        Unlike `GET /api/v1/me/journeys`, this is not bounded: any day the route
+        runs on can be read, whether it is ahead, behind, started or not. It is
+        the direct answer to "what happened on the 9th" and to "what is the state
+        of next Tuesday", neither of which a bounded feed can give.
+
+        **A day with no trip is `not_started`.** That is the honest answer for
+        almost every day of a recurring plan, and it is a statement about what
+        was recorded rather than about what anybody did.
+
+        **404 for everything the caller may not see or may not name**: an unknown
+        route, somebody else's route, a day that is not a real calendar date, and
+        a day this route does not run on — a Saturday on a weekday plan, or any
+        day but its own on a one-off journey. They answer identically on purpose:
+        telling them apart would say which routes exist and which days a
+        stranger's plan runs on.
+
+        There is no journey identifier. The route and the date *are* the
+        identity, and a second name for them would be a second thing to keep in
+        agreement.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+        - $ref: '#/components/parameters/ServiceDate'
+      responses:
+        '200':
+          description: The journey, and whatever has been recorded about it.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Journey'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/v1/routes/{routeId}/cancel:
     post:
       operationId: cancelRoute
@@ -1403,6 +1516,19 @@ components:
       schema:
         $ref: '#/components/schemas/RouteId'
 
+    ServiceDate:
+      name: serviceDate
+      in: path
+      required: true
+      description: |
+        Which of the route's journeys to read, as a calendar day in the route's
+        own timezone.
+
+        A day the route does not run on is a `404`, not a `422`: it is not a
+        malformed value, it is a journey that does not exist.
+      schema:
+        $ref: '#/components/schemas/DepartureDate'
+
     OriginPlaceId:
       name: origin_place_id
       in: query
@@ -2124,6 +2250,99 @@ components:
               format: date-time
             - type: 'null'
 
+    Journey:
+      type: object
+      additionalProperties: false
+      required:
+        [route_id, service_date, origin, destination, departure_time, timezone,
+         route_status, trip]
+      description: |
+        One dated journey as its own driver sees it: a route on a service date,
+        and whatever has been recorded about it being made.
+
+        **Not `MyRoute` with a date.** `MyRoute` is the PLAN — its recurrence,
+        its seats, its rules, when it was published — which is what an owner
+        edits and cancels. This is one occurrence of that plan, and a driver
+        reading it is asking a different question: which journey, where, when,
+        and has it happened. Repeating the plan's fields on every date would say
+        nothing about the date.
+
+        **Nobody else is in it.** No driver identity — the caller is the driver.
+        No passenger names, no passenger count, no accepted-seat figure: who is
+        aboard is not stored, no phase has designed it, and a number here would
+        be answered from seat requests, which have a surface of their own.
+      properties:
+        route_id:
+          allOf:
+            - $ref: '#/components/schemas/RouteId'
+          description: |
+            The plan this journey belongs to. With `service_date` it is the
+            journey's whole identity — there is no journey id.
+        service_date:
+          allOf:
+            - $ref: '#/components/schemas/DepartureDate'
+          description: |
+            The calendar day, in the route's own timezone. A one-off route has
+            exactly one; a recurring plan has one per day it runs.
+        origin:
+          $ref: '#/components/schemas/Place'
+        destination:
+          $ref: '#/components/schemas/Place'
+        departure_time:
+          $ref: '#/components/schemas/DepartureTime'
+        timezone:
+          type: string
+          description: |
+            The IANA zone `service_date` and `departure_time` are read in.
+            Server-owned.
+          examples:
+            - Europe/Istanbul
+        route_status:
+          allOf:
+            - $ref: '#/components/schemas/RouteStatus'
+          description: |
+            The PLAN's status, said plainly rather than folded into `trip`. A
+            cancelled plan can still hold a journey that is under way, and a
+            driver ending one needs both facts rather than one derived from the
+            other.
+        trip:
+          allOf:
+            - $ref: '#/components/schemas/Trip'
+          description: |
+            Always present and never null here, unlike `MyRoute.trip`: a journey
+            is a concrete day, so the question always has an answer. No stored
+            trip means `not_started`.
+
+    JourneyPage:
+      type: object
+      additionalProperties: false
+      required: [journeys, next_cursor]
+      description: |
+        A page of dated journeys, and where the next one starts.
+
+        No total and no count, for the reason every other keyset feed here has
+        neither.
+      properties:
+        journeys:
+          type: array
+          items:
+            $ref: '#/components/schemas/Journey'
+          description: |
+            Ordered by `(service_date, route_id)` descending. Deterministic, but
+            not a global chronology: routes carry their own timezones.
+        next_cursor:
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 512
+            - type: 'null'
+          description: |
+            Opaque; pass it back as `cursor` for the next page.
+
+            **Null means genuinely exhausted** — there is no eligible journey
+            left behind this position — not that this page happened to end. An
+            empty list therefore always arrives with a null cursor.
+
     MyRoute:
       type: object
       additionalProperties: false
@@ -2197,7 +2416,26 @@ components:
             - type: 'null'
 
         trip:
-          $ref: '#/components/schemas/Trip'
+          oneOf:
+            - $ref: '#/components/schemas/Trip'
+            - type: 'null'
+          description: |
+            Whether this journey was made — and **null when the question does not
+            apply**, which is every recurring plan.
+
+            A one-off route is its own single journey, so the lifecycle is the
+            route's and this is it. A recurring plan is not a journey at all: it
+            has as many as it has dates, each with its own state, and no one of
+            them is the plan's. Until Phase 16b this field said `not_started` for
+            a weekday commute, which was a claim about a journey that does not
+            exist — and stayed wrong while the driver was mid-trip on Tuesday.
+
+            **Null is not `not_started`.** It says the lifecycle is not a
+            property of the plan. The dated journeys are read from
+            `GET /api/v1/me/journeys` and
+            `GET /api/v1/routes/{routeId}/journeys/{serviceDate}`, which answer
+            per date. Nothing picks one of a plan's trips to fill this in:
+            whichever it picked would be a day the caller never named.
 
     RouteEnvelope:
       type: object

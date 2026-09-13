@@ -95,6 +95,8 @@ final class AuthContractTest extends TestCase
             '/api/v1/routes',
             '/api/v1/me/routes',
             '/api/v1/routes/discover',
+            '/api/v1/me/journeys',
+            '/api/v1/routes/{routeId}/journeys/{serviceDate}',
             '/api/v1/routes/{routeId}/cancel',
             '/api/v1/routes/{routeId}/trip/start',
             '/api/v1/routes/{routeId}/trip/complete',

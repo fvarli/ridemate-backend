@@ -152,6 +152,58 @@ final class TripLifecycleProjectionTest extends TestCase
     }
 
     /**
+     * CARRIES WEIGHT. A PLAN'S lifecycle is null, and null is not `not_started`.
+     *
+     * Until Phase 16b this surface answered `not_started` for a weekday
+     * commute, which was a claim about a journey that does not exist — and it
+     * stayed wrong while the driver was mid-trip on Tuesday. A plan has as many
+     * journeys as it has dates, so the field says the question does not apply
+     * here and the dated reads answer it per date.
+     */
+    public function test_a_recurring_plan_carries_no_trip_lifecycle(): void
+    {
+        $driver = $this->member('+905321110000', 'İrem Yılmaz');
+        $this->publishRecurring($driver, 1);
+
+        $route = $this->myRoutes($driver)['routes'][0];
+
+        self::assertArrayHasKey('trip', $route, 'the field was dropped rather than nulled');
+        self::assertNull($route['trip']);
+    }
+
+    /**
+     * CARRIES WEIGHT. And it stays null however many journeys the plan has had.
+     *
+     * This is the mutation that would look harmless: filling the field from
+     * whichever of the plan's trips came back first. Two dated journeys in
+     * different states make any such pick visibly wrong — whichever it chose
+     * would be a day the caller never named.
+     */
+    public function test_a_recurring_plans_trips_never_fill_the_plans_lifecycle(): void
+    {
+        $driver = $this->member('+905321110000', 'İrem Yılmaz');
+        $this->publishRecurring($driver, 1);
+
+        $route = Route::query()->findOrFail($this->routeId(1));
+        $this->plantInProgress($route, $this->publishedAt->subDay());
+        $this->plantCompleted($route, $this->publishedAt->subDays(2));
+
+        self::assertNull($this->myRoutes($driver)['routes'][0]['trip']);
+    }
+
+    /** A one-off route is its own single journey, so nothing changed for it. */
+    public function test_a_one_off_route_still_carries_its_lifecycle(): void
+    {
+        $driver = $this->member('+905321110000', 'İrem Yılmaz');
+        $this->publish($driver, 1);
+
+        $trip = $this->myRoutes($driver)['routes'][0]['trip'];
+
+        self::assertIsArray($trip);
+        self::assertSame('not_started', $trip['state']);
+    }
+
+    /**
      * CARRIES WEIGHT. An exact key set, so a new field reaches anybody only
      * when somebody edits this.
      */
@@ -443,6 +495,36 @@ final class TripLifecycleProjectionTest extends TestCase
 
         self::assertSame('not_started', $trip['state']);
         self::assertNull($trip['started_at']);
+    }
+
+    /**
+     * @param  array<string, string>  $headers
+     */
+    private function publishRecurring(array $headers, int $n): void
+    {
+        $body = $this->publication($n);
+        $body['recurrence'] = 'weekdays';
+        // Absent rather than null: a weekday commute has no single date, and
+        // publication refuses the key outright.
+        unset($body['departure_date']);
+
+        $this->postJson('/api/v1/routes', $body, $headers)->assertStatus(201);
+    }
+
+    /** A finished journey on a date of this route, written straight to the row. */
+    private function plantCompleted(Route $route, CarbonImmutable $serviceDate): void
+    {
+        DB::table('trips')->insert([
+            'id' => '01991e00-0000-7000-8000-0000000000fe',
+            'route_id' => $route->id,
+            'service_date' => $serviceDate->toDateString(),
+            'status' => 'completed',
+            'started_at' => $this->departed(),
+            'completed_at' => $this->departed()->addHour(),
+            'aborted_at' => null,
+            'created_at' => $this->departed(),
+            'updated_at' => $this->departed(),
+        ]);
     }
 
     /** A journey on a date of this route, written straight to the row. */
