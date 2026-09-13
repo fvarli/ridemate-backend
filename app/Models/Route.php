@@ -159,6 +159,17 @@ class Route extends Model
     }
 
     /**
+     * Does this route run on that day?
+     *
+     * Delegated for the reason `departureState` is: one implementation of what
+     * a recurrence means, in the value object that holds the recurrence.
+     */
+    public function runsOn(CarbonImmutable $serviceDate): bool
+    {
+        return $this->departure()->runsOn($serviceDate);
+    }
+
+    /**
      * The one date this route runs on, for a route that runs on exactly one.
      *
      * A journey is `(route_id, service_date)`, and while every requestable and

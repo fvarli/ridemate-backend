@@ -205,6 +205,173 @@ final class RouteDepartureTest extends TestCase
      * is written here: a second definition of "is this a v7" would be a second
      * thing to keep correct.
      */
+    // ------------------------------------------- which days a route runs on
+
+    private function weekdayPlan(string $timezone = 'Europe/Istanbul'): RouteDeparture
+    {
+        return RouteDeparture::fromInput(Recurrence::Weekdays, null, '08:00', $timezone);
+    }
+
+    private function oneOff(string $date, string $timezone = 'Europe/Istanbul'): RouteDeparture
+    {
+        return RouteDeparture::fromInput(Recurrence::Once, $date, '08:00', $timezone);
+    }
+
+    private function day(string $date): CarbonImmutable
+    {
+        $parsed = CarbonImmutable::createFromFormat('!Y-m-d', $date);
+        self::assertInstanceOf(CarbonImmutable::class, $parsed);
+
+        return $parsed;
+    }
+
+    public function test_a_one_off_route_runs_only_on_its_own_date(): void
+    {
+        $departure = $this->oneOff('2026-09-14');
+
+        self::assertTrue($departure->runsOn($this->day('2026-09-14')));
+    }
+
+    public function test_a_one_off_route_does_not_run_on_another_date(): void
+    {
+        $departure = $this->oneOff('2026-09-14');
+
+        self::assertFalse($departure->runsOn($this->day('2026-09-15')));
+        self::assertFalse($departure->runsOn($this->day('2026-09-13')));
+    }
+
+    /**
+     * CARRIES WEIGHT. A weekday is Monday to Friday, and nothing else.
+     *
+     * 2026-09-14 is a Monday and 2026-09-18 a Friday; 2026-09-19 and -20 are
+     * the weekend. Each is its own case, so a rule that let Saturday through
+     * cannot hide behind a passing Monday.
+     */
+    public function test_a_weekday_plan_runs_on_monday(): void
+    {
+        self::assertTrue($this->weekdayPlan()->runsOn($this->day('2026-09-14')));
+    }
+
+    public function test_a_weekday_plan_runs_on_friday(): void
+    {
+        self::assertTrue($this->weekdayPlan()->runsOn($this->day('2026-09-18')));
+    }
+
+    public function test_a_weekday_plan_does_not_run_on_saturday(): void
+    {
+        self::assertFalse($this->weekdayPlan()->runsOn($this->day('2026-09-19')));
+    }
+
+    public function test_a_weekday_plan_does_not_run_on_sunday(): void
+    {
+        self::assertFalse($this->weekdayPlan()->runsOn($this->day('2026-09-20')));
+    }
+
+    /** A public holiday is still a weekday: nothing here consults a calendar. */
+    public function test_a_public_holiday_is_still_a_weekday(): void
+    {
+        // 2026-10-29, Republic Day in Türkiye, falls on a Thursday.
+        self::assertTrue($this->weekdayPlan()->runsOn($this->day('2026-10-29')));
+    }
+
+    // ------------------------------------------ the instant of a dated journey
+
+    /**
+     * CARRIES WEIGHT. The supplied day is the one that is used.
+     *
+     * A dated instant that ignored its argument would answer the same moment
+     * for every journey of a plan, and every window built on it would be wrong
+     * in the same direction.
+     */
+    public function test_the_dated_instant_follows_the_day_it_was_given(): void
+    {
+        $plan = $this->weekdayPlan();
+
+        self::assertSame(
+            '2026-09-14T08:00:00+03:00',
+            $plan->instantOn($this->day('2026-09-14'))->toIso8601String(),
+        );
+        self::assertSame(
+            '2026-09-15T08:00:00+03:00',
+            $plan->instantOn($this->day('2026-09-15'))->toIso8601String(),
+        );
+    }
+
+    /** A day the route does not run on has no departure to compute. */
+    public function test_a_day_the_route_does_not_run_on_has_no_instant(): void
+    {
+        $this->expectException(\LogicException::class);
+
+        $this->weekdayPlan()->instantOn($this->day('2026-09-19'));
+    }
+
+    /** The one-off form is the dated form, not a second arithmetic. */
+    public function test_the_one_off_instant_is_the_dated_instant(): void
+    {
+        $departure = $this->oneOff('2026-09-14');
+
+        self::assertEquals(
+            $departure->instantOn($this->day('2026-09-14')),
+            $departure->instant(),
+        );
+    }
+
+    /**
+     * CARRIES WEIGHT. The zone is applied per date, not as a fixed offset.
+     *
+     * Britain changes clocks on 2026-03-29, so 08:00 is GMT the day before and
+     * BST the day after. A departure built from a stored offset — or from the
+     * server's zone — would be an hour out on one side of that Sunday, and the
+     * route's own timezone is the only thing that gets it right on both.
+     *
+     * `Europe/London` is used deliberately: the pilot configuration is not
+     * touched to prove a timezone rule.
+     */
+    public function test_the_route_timezone_is_applied_per_date_across_a_dst_change(): void
+    {
+        $plan = $this->weekdayPlan('Europe/London');
+
+        self::assertSame(
+            '2026-03-27T08:00:00+00:00',
+            $plan->instantOn($this->day('2026-03-27'))->toIso8601String(),
+        );
+        self::assertSame(
+            '2026-03-30T08:00:00+01:00',
+            $plan->instantOn($this->day('2026-03-30'))->toIso8601String(),
+        );
+    }
+
+    /** Departure is reached at the instant itself, not a moment later. */
+    public function test_a_dated_departure_is_reached_inclusively(): void
+    {
+        $plan = $this->weekdayPlan();
+        $monday = $this->day('2026-09-14');
+        $departs = $plan->instantOn($monday);
+
+        self::assertFalse($plan->hasDeparted($monday, $departs->subSecond()));
+        self::assertTrue($plan->hasDeparted($monday, $departs));
+        self::assertTrue($plan->hasDeparted($monday, $departs->addSecond()));
+    }
+
+    // ------------------------------------------------- the route's own today
+
+    /**
+     * CARRIES WEIGHT. Today is read where the route is, not where the server is.
+     *
+     * At 22:30 UTC it is already tomorrow in İstanbul. A horizon measured on
+     * the server's day would give that member one day less than the one beside
+     * them.
+     */
+    public function test_today_is_the_routes_local_day(): void
+    {
+        $plan = $this->weekdayPlan();
+        $lateUtc = CarbonImmutable::parse('2026-09-14T22:30:00Z');
+
+        self::assertSame('2026-09-15', $plan->localDate($lateUtc)->format('Y-m-d'));
+        self::assertSame(0, $plan->daysUntil($this->day('2026-09-15'), $lateUtc));
+        self::assertSame(-1, $plan->daysUntil($this->day('2026-09-14'), $lateUtc));
+    }
+
     public function test_only_a_version_7_uuid_is_accepted_as_a_route_id(): void
     {
         $v7 = '01991a00-0000-7000-8000-00000000abcd';

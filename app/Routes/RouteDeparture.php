@@ -8,6 +8,7 @@ use Carbon\CarbonImmutable;
 use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
+use LogicException;
 
 /**
  * When a route leaves, in the terms the driver actually chose.
@@ -101,23 +102,141 @@ final readonly class RouteDeparture
     }
 
     /**
+     * Does this route run on that day?
+     *
+     * The one authority on the question, so recurrence membership cannot come
+     * to mean one thing to seat requests and another to trips.
+     *
+     *   `once`     the day it was published for, and no other.
+     *   `weekdays` Monday to Friday.
+     *
+     * WEEKDAY IS SPELLED OUT RATHER THAN ASKED OF CARBON
+     *
+     * `isWeekday()` consults `Carbon::getWeekendDays()`, a process-wide setting
+     * any other code could change. What counts as a weekday is a product rule,
+     * not a locale preference, so it is written here in ISO days — 1 Monday
+     * through 5 Friday — and moves only when somebody decides it should.
+     *
+     * There is no holiday calendar and no exception list. A public holiday is
+     * still a weekday to this product; whether a driver runs that morning is
+     * theirs to say by starting the journey or not.
+     *
+     * Only the calendar day of [$serviceDate] is read. A time of day, if one
+     * rides along, says nothing about which day was meant.
+     */
+    public function runsOn(CarbonImmutable $serviceDate): bool
+    {
+        $day = $serviceDate->format(self::DATE_FORMAT);
+
+        if ($this->recurrence === Recurrence::Once) {
+            return $day === $this->date;
+        }
+
+        $iso = $this->atMidnight($day)->dayOfWeekIso;
+
+        return $iso >= 1 && $iso <= 5;
+    }
+
+    /**
+     * The moment the journey on that day departs.
+     *
+     * The date is the caller's, the wall clock and the zone are the route's.
+     * Which is the whole point: a plan has no single instant, but a plan on a
+     * named day has exactly one.
+     *
+     * Refuses a day the route does not run on rather than answering for it. A
+     * departure computed for a Saturday that no journey exists on is not a
+     * useful value — it is a wrong one that would be compared against a clock
+     * and believed, so the mistake is raised where it was made.
+     *
+     * @throws LogicException when the route does not run on [$serviceDate].
+     */
+    public function instantOn(CarbonImmutable $serviceDate): CarbonImmutable
+    {
+        if (! $this->runsOn($serviceDate)) {
+            throw new LogicException(sprintf(
+                'This %s route does not run on %s, so that day has no departure.',
+                $this->recurrence->value,
+                $serviceDate->format(self::DATE_FORMAT),
+            ));
+        }
+
+        $instant = CarbonImmutable::createFromFormat(
+            '!'.self::DATE_FORMAT.' '.self::TIME_FORMAT,
+            $serviceDate->format(self::DATE_FORMAT).' '.$this->time,
+            new DateTimeZone($this->timezone),
+        );
+
+        // Proven a real date and a real time by fromInput(); this satisfies the
+        // type rather than handling a case.
+        assert($instant instanceof CarbonImmutable);
+
+        return $instant;
+    }
+
+    /**
+     * The calendar date it is now, where this route is read.
+     *
+     * The single answer to "what is today", because a horizon measured against
+     * the server's idea of the day would move a member's deadline by however
+     * far the deployment happens to be from the pilot.
+     *
+     * A bare date, so it compares with a service date as a day rather than as
+     * a moment.
+     */
+    public function localDate(?CarbonImmutable $now = null): CarbonImmutable
+    {
+        $local = ($now ?? CarbonImmutable::now())->setTimezone(new DateTimeZone($this->timezone));
+
+        return $this->atMidnight($local->format(self::DATE_FORMAT));
+    }
+
+    /**
+     * Whole calendar days from this route's today to that day.
+     *
+     * Negative for a day already gone, zero for today. Both sides are read as
+     * bare days in the route's own zone, so a partial day cannot round the
+     * answer and a process running elsewhere cannot shift it.
+     *
+     * The arithmetic lives here, with the timezone it depends on, rather than
+     * in whichever rule happens to need a distance this week.
+     */
+    public function daysUntil(CarbonImmutable $serviceDate, ?CarbonImmutable $now = null): int
+    {
+        return (int) $this->localDate($now)->diffInDays(
+            $this->atMidnight($serviceDate->format(self::DATE_FORMAT)),
+            absolute: false,
+        );
+    }
+
+    /**
+     * Has the journey on that day already left?
+     *
+     * The dated form of the question `state()` answers for a one-off route, and
+     * the primitive both the request window and the trip's start window are
+     * built from — so neither gets to decide separately what "already left"
+     * means. Inclusive: the departure instant itself has been reached.
+     */
+    public function hasDeparted(CarbonImmutable $serviceDate, ?CarbonImmutable $now = null): bool
+    {
+        return ! $this->instantOn($serviceDate)->greaterThan($now ?? CarbonImmutable::now());
+    }
+
+    /**
      * The moment this departure happens, for a one-off route.
      *
      * Null for a recurring one, which is the honest answer rather than the next
      * occurrence: choosing "the next Tuesday" here would invent a schedule the
      * product has not designed.
+     *
+     * Backed by `instantOn` rather than computing its own, so a one-off journey
+     * and a dated one cannot drift into two arithmetics.
      */
     public function instant(): ?CarbonImmutable
     {
-        if ($this->date === null) {
-            return null;
-        }
+        $date = $this->dateValue();
 
-        return CarbonImmutable::createFromFormat(
-            '!'.self::DATE_FORMAT.' '.self::TIME_FORMAT,
-            $this->date.' '.$this->time,
-            new DateTimeZone($this->timezone),
-        );
+        return $date === null ? null : $this->instantOn($date);
     }
 
     /**
@@ -143,6 +262,25 @@ final readonly class RouteDeparture
     public function isUpcoming(?CarbonImmutable $now = null): bool
     {
         return $this->state($now) === DepartureState::Upcoming;
+    }
+
+    /**
+     * A `Y-m-d` read as a bare day in this route's zone.
+     *
+     * `!` resets everything the format does not mention, so no time of day
+     * leaks in from the clock.
+     */
+    private function atMidnight(string $day): CarbonImmutable
+    {
+        $date = CarbonImmutable::createFromFormat(
+            '!'.self::DATE_FORMAT,
+            $day,
+            new DateTimeZone($this->timezone),
+        );
+
+        assert($date instanceof CarbonImmutable);
+
+        return $date;
     }
 
     /**
