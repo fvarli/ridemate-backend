@@ -105,6 +105,14 @@ final class SeatRequestRefused extends RuntimeException
         );
     }
 
+    public static function serviceDatePassed(): self
+    {
+        return new self(
+            RefusalReason::ServiceDatePassed,
+            'That journey has already departed.',
+        );
+    }
+
     public static function routeFull(): self
     {
         return new self(

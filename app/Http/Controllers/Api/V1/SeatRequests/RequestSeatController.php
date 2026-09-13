@@ -9,7 +9,9 @@ use App\Http\Requests\RequestSeatRequest;
 use App\Http\Responses\MySeatRequestPayload;
 use App\SeatRequests\RequestSeat;
 use App\SeatRequests\SeatRequestViews;
+use App\SeatRequests\ServiceDateRefused;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Validation\ValidationException;
 
 /**
  * `POST /api/v1/routes/{routeId}/seat-requests`
@@ -21,7 +23,8 @@ use Illuminate\Http\JsonResponse;
  *
  * Every refusal is raised by the domain and rendered by `ExceptionRenderer`,
  * which is where the status and `details.reason` are decided. This controller
- * chooses nothing but the success code.
+ * chooses the success code and one other thing: that a service date the route
+ * cannot honour is a validation failure on its field rather than a refusal.
  */
 final class RequestSeatController
 {
@@ -31,11 +34,23 @@ final class RequestSeatController
         RequestSeat $ask,
         SeatRequestViews $views,
     ): JsonResponse {
-        $result = $ask(
-            AuthContext::of($request)->account,
-            $request->seatRequestId(),
-            $routeId,
-        );
+        try {
+            $result = $ask(
+                AuthContext::of($request)->account,
+                $request->seatRequestId(),
+                $routeId,
+                $request->serviceDate(),
+            );
+        } catch (ServiceDateRefused $malformed) {
+            // Not a refusal on the wire. A day this route never runs on, or one
+            // past the horizon, is a value the client's own picker could have
+            // ruled out — so it is a `422` on the field that carried it rather
+            // than a conflict reason nobody can usefully branch on. Same shape
+            // as publication's `InvalidJourney`.
+            throw ValidationException::withMessages([
+                'service_date' => [$malformed->getMessage()],
+            ]);
+        }
 
         return new JsonResponse(
             MySeatRequestPayload::envelope($views->own($result->request)),

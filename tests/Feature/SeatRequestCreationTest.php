@@ -20,6 +20,7 @@ use App\SeatRequests\RequestSeat;
 use App\SeatRequests\SeatRequested;
 use App\SeatRequests\SeatRequestRefused;
 use App\SeatRequests\SeatRequestStatus;
+use App\SeatRequests\ServiceDateRefused;
 use Carbon\CarbonImmutable;
 use Database\Seeders\PilotPlaceSeeder;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
@@ -129,14 +130,25 @@ final class SeatRequestCreationTest extends TestCase
         self::assertSame(0, SeatRequest::query()->count());
     }
 
-    public function test_a_weekday_plan_cannot_be_requested(): void
+    /**
+     * CARRIES WEIGHT. A plan is asked about for a day, or not at all.
+     *
+     * Phase 13 refused a weekday plan outright because there was no day to hold
+     * a seat on. There is one now, and the caller must name it — a plan cannot
+     * choose on their behalf, and inventing "the next weekday" here would be
+     * exactly the schedule the product never designed.
+     */
+    public function test_a_weekday_plan_must_be_asked_about_for_a_day(): void
     {
         $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
 
-        $refused = $this->refusal($this->passenger(), $this->id('01'), $route);
+        $this->expectException(ServiceDateRefused::class);
 
-        self::assertSame(RefusalReason::RecurringRouteUnsupported, $refused->reason);
-        self::assertSame(0, SeatRequest::query()->count());
+        try {
+            $this->ask($this->passenger(), $this->id('01'), $route);
+        } finally {
+            self::assertSame(0, SeatRequest::query()->count());
+        }
     }
 
     /**
@@ -555,14 +567,182 @@ final class SeatRequestCreationTest extends TestCase
         );
     }
 
-    /** The plan is still refused, exactly as before. */
-    public function test_a_weekday_plan_is_still_refused(): void
+    /**
+     * CARRIES WEIGHT. The dead end is gone: a weekday plan can be asked about.
+     *
+     * The whole point of the slice. The asking records the day it is for, not
+     * the plan, so two mornings of one commute are two askings.
+     */
+    public function test_a_weekday_plan_can_be_asked_about_for_a_service_date(): void
+    {
+        $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
+        $monday = $this->nextWeekday();
+
+        $asked = $this->ask($this->passenger(), $this->id('01'), $route, on: $monday);
+
+        self::assertFalse($asked->wasAlreadyRequested);
+        self::assertSame(
+            $monday->format('Y-m-d'),
+            $asked->request->service_date->format('Y-m-d'),
+        );
+    }
+
+    public function test_a_weekend_is_not_a_day_a_weekday_plan_runs(): void
     {
         $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
 
+        $this->expectException(ServiceDateRefused::class);
+
+        $this->ask($this->passenger(), $this->id('01'), $route, on: $this->nextSaturday());
+    }
+
+    /** CARRIES WEIGHT. The horizon's far edge is open, and the day after is not. */
+    public function test_the_fourteenth_day_ahead_may_be_asked_about(): void
+    {
+        $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
+        $day = $this->weekdayWithin(14);
+
+        $asked = $this->ask($this->passenger(), $this->id('01'), $route, on: $day);
+
         self::assertSame(
-            RefusalReason::RecurringRouteUnsupported,
-            $this->refusal($this->passenger(), $this->id('01'), $route)->reason,
+            $day->format('Y-m-d'),
+            $asked->request->service_date->format('Y-m-d'),
+        );
+    }
+
+    public function test_a_day_beyond_the_horizon_may_not_be_asked_about(): void
+    {
+        $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
+
+        $this->expectException(ServiceDateRefused::class);
+
+        $this->ask($this->passenger(), $this->id('01'), $route, on: $this->weekdayBeyond(14));
+    }
+
+    /**
+     * CARRIES WEIGHT. Today is askable until it leaves, and not after.
+     *
+     * The two halves of the same boundary, so a rule that admitted every today
+     * — or refused every today — cannot pass both.
+     */
+    public function test_todays_journey_is_askable_until_it_departs(): void
+    {
+        $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
+        $today = $this->todayIfAWeekday();
+        $departs = $route->departure()->instantOn($today);
+
+        $asked = $this->ask(
+            $this->passenger(),
+            $this->id('01'),
+            $route,
+            on: $today,
+            now: $departs->subMinute(),
+        );
+
+        self::assertSame($today->format('Y-m-d'), $asked->request->service_date->format('Y-m-d'));
+    }
+
+    public function test_todays_journey_is_not_askable_once_it_has_departed(): void
+    {
+        $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
+        $today = $this->todayIfAWeekday();
+
+        $this->expectException(ServiceDateRefused::class);
+
+        $this->ask(
+            $this->passenger(),
+            $this->id('01'),
+            $route,
+            on: $today,
+            now: $route->departure()->instantOn($today),
+        );
+    }
+
+    /** Two mornings of one commute are two askings, not one repeated. */
+    public function test_two_days_of_one_plan_are_two_askings(): void
+    {
+        $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
+        $passenger = $this->passenger();
+        $first = $this->nextWeekday();
+        $second = $this->nextWeekday(1);
+
+        $this->ask($passenger, $this->id('01'), $route, on: $first);
+        $this->ask($passenger, $this->id('02'), $route, on: $second);
+
+        self::assertSame(2, SeatRequest::query()->count());
+    }
+
+    /** CARRIES WEIGHT. One id does not describe two journeys. */
+    public function test_one_id_may_not_be_reused_for_another_day(): void
+    {
+        $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
+        $passenger = $this->passenger();
+
+        $this->ask($passenger, $this->id('01'), $route, on: $this->nextWeekday());
+
+        self::assertSame(
+            RefusalReason::IdAlreadyUsed,
+            $this->refusal($passenger, $this->id('01'), $route, on: $this->nextWeekday(1))->reason,
+        );
+    }
+
+    /** And a second id for the same day is the same asking arriving again. */
+    public function test_another_id_for_the_same_day_is_already_requested(): void
+    {
+        $route = $this->route($this->driver(), recurrence: Recurrence::Weekdays);
+        $passenger = $this->passenger();
+        $day = $this->nextWeekday();
+
+        $this->ask($passenger, $this->id('01'), $route, on: $day);
+
+        self::assertSame(
+            RefusalReason::AlreadyRequested,
+            $this->refusal($passenger, $this->id('02'), $route, on: $day)->reason,
+        );
+    }
+
+    // ------------------------------------------- one-off compatibility
+
+    /** CARRIES WEIGHT. A client that never learned about dates still works. */
+    public function test_a_one_off_journey_may_still_be_asked_about_without_a_day(): void
+    {
+        $route = $this->route($this->driver());
+
+        $asked = $this->ask($this->passenger(), $this->id('01'), $route);
+
+        self::assertSame(
+            $route->soleServiceDate()->format('Y-m-d'),
+            $asked->request->service_date->format('Y-m-d'),
+        );
+    }
+
+    /** Naming its one day is accepted, because it is the same journey. */
+    public function test_a_one_off_journey_accepts_its_own_day(): void
+    {
+        $route = $this->route($this->driver());
+
+        $asked = $this->ask(
+            $this->passenger(),
+            $this->id('01'),
+            $route,
+            on: $route->soleServiceDate(),
+        );
+
+        self::assertFalse($asked->wasAlreadyRequested);
+    }
+
+    /** Naming a different one is not. */
+    public function test_a_one_off_journey_refuses_another_day(): void
+    {
+        $route = $this->route($this->driver());
+
+        $this->expectException(ServiceDateRefused::class);
+
+        $this->ask(
+            $this->passenger(),
+            $this->id('01'),
+            $route,
+            on: $route->soleServiceDate()->addDay(),
         );
     }
 
@@ -599,23 +779,111 @@ final class SeatRequestCreationTest extends TestCase
         Account $passenger,
         string $requestId,
         Route $route,
+        ?CarbonImmutable $on = null,
         ?CarbonImmutable $now = null,
     ): SeatRequested {
-        return app(RequestSeat::class)($passenger, $requestId, $route->id, $now);
+        return app(RequestSeat::class)($passenger, $requestId, $route->id, $on, $now);
     }
 
     private function refusal(
         Account $passenger,
         string $requestId,
         Route $route,
+        ?CarbonImmutable $on = null,
     ): SeatRequestRefused {
         try {
-            $this->ask($passenger, $requestId, $route);
+            $this->ask($passenger, $requestId, $route, on: $on);
         } catch (SeatRequestRefused $refused) {
             return $refused;
         }
 
         self::fail('the request was not refused');
+    }
+
+    /** Today, in the pilot's zone, when today is a weekday this plan runs. */
+    private function todayIfAWeekday(): CarbonImmutable
+    {
+        return $this->weekdayFrom(0);
+    }
+
+    /** The next weekday strictly after today, skipping [$after] of them. */
+    private function nextWeekday(int $after = 0): CarbonImmutable
+    {
+        $day = $this->weekdayFrom(1);
+
+        for ($skipped = 0; $skipped < $after; $skipped++) {
+            $day = $this->weekdayFrom(1, $day);
+        }
+
+        return $day;
+    }
+
+    private function nextSaturday(): CarbonImmutable
+    {
+        $day = $this->bareToday();
+
+        while ($day->dayOfWeekIso !== 6) {
+            $day = $day->addDay();
+        }
+
+        return $day;
+    }
+
+    /** A weekday inside the horizon, as far out as [$days] allows. */
+    private function weekdayWithin(int $days): CarbonImmutable
+    {
+        $day = $this->bareToday()->addDays($days);
+
+        // Walk BACK off a weekend, so the day stays inside the horizon.
+        while ($day->dayOfWeekIso > 5) {
+            $day = $day->subDay();
+        }
+
+        return $day;
+    }
+
+    /** The first weekday past the horizon. */
+    private function weekdayBeyond(int $days): CarbonImmutable
+    {
+        $day = $this->bareToday()->addDays($days + 1);
+
+        while ($day->dayOfWeekIso > 5) {
+            $day = $day->addDay();
+        }
+
+        return $day;
+    }
+
+    /**
+     * The first weekday at or after [$offset] days from [$from].
+     *
+     * The suite runs on whatever day it runs on, so the fixtures walk the
+     * calendar rather than hard-coding one — a test that only passes on a
+     * Tuesday is a test that fails for somebody on a Saturday.
+     */
+    private function weekdayFrom(int $offset, ?CarbonImmutable $from = null): CarbonImmutable
+    {
+        $day = ($from ?? $this->bareToday())->addDays($offset);
+
+        while ($day->dayOfWeekIso > 5) {
+            $day = $day->addDay();
+        }
+
+        return $day;
+    }
+
+    private function bareToday(): CarbonImmutable
+    {
+        $timezone = config('ridemate.pilot.timezone');
+        self::assertIsString($timezone);
+
+        $day = CarbonImmutable::createFromFormat(
+            '!Y-m-d',
+            CarbonImmutable::now()->setTimezone($timezone)->format('Y-m-d'),
+        );
+        self::assertInstanceOf(CarbonImmutable::class, $day);
+
+        return $day;
     }
 
     /**

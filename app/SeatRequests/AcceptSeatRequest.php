@@ -7,7 +7,7 @@ namespace App\SeatRequests;
 use App\Models\Account;
 use App\Models\Route;
 use App\Models\SeatRequest;
-use App\Routes\DepartureState;
+use App\Routes\Recurrence;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 
@@ -83,8 +83,21 @@ final class AcceptSeatRequest
 
         // Re-read under the lock. A value read before it may already be stale,
         // and `CancelRoute` takes this same row.
-        if (! $route->isPublished() || $route->departureState($now) === DepartureState::Past) {
+        if (! $route->isPublished()) {
             throw SeatRequestRefused::routeUnavailable();
+        }
+
+        // Whether THIS asking's journey has left, not whether the plan has —
+        // a plan never does. Asked of the route's own departure semantics, so
+        // the answer is the same one the request path and the trip window use.
+        if ($route->departure()->hasDeparted($request->service_date, $now)) {
+            // A one-off route keeps the string it has answered since Phase 13,
+            // which shipped clients map. For a plan that string would be a
+            // false claim — the route is available, tomorrow included — so the
+            // day is named instead.
+            throw $route->recurrence === Recurrence::Once
+                ? SeatRequestRefused::routeUnavailable()
+                : SeatRequestRefused::serviceDatePassed();
         }
 
         if ($this->acceptedSeats($request) >= $route->seats_offered) {

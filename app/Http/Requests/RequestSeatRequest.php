@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 
@@ -18,7 +19,7 @@ use Illuminate\Foundation\Http\FormRequest;
 final class RequestSeatRequest extends FormRequest
 {
     /** @var list<string> */
-    private const ALLOWED = ['id'];
+    private const ALLOWED = ['id', 'service_date'];
 
     /**
      * @return array<string, list<string>>
@@ -30,6 +31,12 @@ final class RequestSeatRequest extends FormRequest
             // as the row's primary key, and a time-ordered one keeps inserts
             // appending to the index rather than scattering across it.
             'id' => ['required', 'string', 'uuid:7'],
+            // Optional, and optional on purpose: a one-off journey has a single
+            // day the server already knows, so a client that never learned
+            // about dates keeps working unchanged. A recurring plan has many,
+            // and the command requires one — which it can only do once it knows
+            // the recurrence, so the rule is not expressible here.
+            'service_date' => ['sometimes', 'string', 'date_format:Y-m-d'],
         ];
     }
 
@@ -54,5 +61,25 @@ final class RequestSeatRequest extends FormRequest
     public function seatRequestId(): string
     {
         return $this->string('id')->value();
+    }
+
+    /**
+     * The day named, if one was.
+     *
+     * Parsed with `!` so nothing leaks in from the clock: this is a calendar
+     * day, not a moment, and the shape was already proven by the rule above.
+     */
+    public function serviceDate(): ?CarbonImmutable
+    {
+        $named = $this->input('service_date');
+
+        if (! is_string($named)) {
+            return null;
+        }
+
+        $day = CarbonImmutable::createFromFormat('!Y-m-d', $named);
+        assert($day instanceof CarbonImmutable);
+
+        return $day;
     }
 }

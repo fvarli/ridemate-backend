@@ -2341,6 +2341,7 @@ components:
         - id_already_used
         - already_requested
         - route_unavailable
+        - service_date_passed
         - route_full
         - already_accepted
         - already_decided
@@ -2366,18 +2367,44 @@ components:
       additionalProperties: false
       required: [id]
       description: |
-        One field. The journey is in the path, the passenger is the
+        The id, and the day. The route is in the path, the passenger is the
         authenticated caller, and the status is not the client's to choose.
         Anything else is refused rather than ignored — a key the server silently
         drops is a feature the client believes it is using.
+
+        `service_date` is **optional, and optional on purpose**. A one-off route
+        runs on a single day the server already knows, so a client that predates
+        dated journeys keeps working unchanged; if it does send one, it must be
+        that day. A recurring plan runs on many, so one must be named — the
+        server will not choose a morning on a member's behalf.
+
+        A day the route does not run on, one further ahead than the horizon
+        allows, or one whose departure has already passed is a
+        `422 validation_failed` on `service_date`, not a refusal: the client's
+        own picker can rule all three out before sending, so a value that
+        arrives is a malformed request rather than a conflict.
       properties:
         id:
           $ref: '#/components/schemas/SeatRequestId'
+        service_date:
+          allOf:
+            - $ref: '#/components/schemas/DepartureDate'
+          description: |
+            Which of the route's journeys the seat is asked for.
+
+            Required for a recurring route, and bounded: today through fourteen
+            days ahead inclusive, and only on days the recurrence actually runs
+            — Monday to Friday for a weekday plan. Today counts until its own
+            departure passes.
+
+            The horizon bounds **asking**, not the plan: a weekday route runs
+            until it is cancelled, and nothing here says otherwise.
 
     MySeatRequest:
       type: object
       additionalProperties: false
-      required: [id, status, requested_at, decided_at, withdrawn_at, route]
+      required:
+        [id, status, service_date, requested_at, decided_at, withdrawn_at, route]
       description: |
         The caller's own asking, with the journey it is about.
 
@@ -2390,6 +2417,16 @@ components:
           $ref: '#/components/schemas/SeatRequestId'
         status:
           $ref: '#/components/schemas/SeatRequestStatus'
+        service_date:
+          allOf:
+            - $ref: '#/components/schemas/DepartureDate'
+          description: |
+            Which of the route's journeys this asking is for.
+
+            Always present. A one-off route has a single day and this is it; a
+            recurring plan has many and this is the one the member chose. It is
+            the asking's own day, never the route's — two mornings of one
+            commute are two askings.
         requested_at:
           type: string
           format: date-time
@@ -2682,7 +2719,8 @@ components:
       type: object
       additionalProperties: false
       required:
-        [id, status, requested_at, decided_at, withdrawn_at, route, my_review]
+        [id, status, service_date, requested_at, decided_at, withdrawn_at, route,
+         my_review]
       description: |
         One of the caller's own askings **as the listing publishes it**:
         `MySeatRequest` plus the review the caller has written about it.
@@ -2701,6 +2739,16 @@ components:
           $ref: '#/components/schemas/SeatRequestId'
         status:
           $ref: '#/components/schemas/SeatRequestStatus'
+        service_date:
+          allOf:
+            - $ref: '#/components/schemas/DepartureDate'
+          description: |
+            Which of the route's journeys this asking is for.
+
+            Always present. A one-off route has a single day and this is it; a
+            recurring plan has many and this is the one the member chose. It is
+            the asking's own day, never the route's — two mornings of one
+            commute are two askings.
         requested_at:
           type: string
           format: date-time
@@ -2723,7 +2771,8 @@ components:
       type: object
       additionalProperties: false
       required:
-        [id, status, requested_at, decided_at, withdrawn_at, passenger, my_review]
+        [id, status, service_date, requested_at, decided_at, withdrawn_at, passenger,
+         my_review]
       description: |
         One asking on the caller's own journey **as the listing publishes it**:
         `RouteSeatRequest` plus the review the caller has written about it.
@@ -2735,6 +2784,16 @@ components:
           $ref: '#/components/schemas/SeatRequestId'
         status:
           $ref: '#/components/schemas/SeatRequestStatus'
+        service_date:
+          allOf:
+            - $ref: '#/components/schemas/DepartureDate'
+          description: |
+            Which of the route's journeys this asking is for.
+
+            Always present. A one-off route has a single day and this is it; a
+            recurring plan has many and this is the one the member chose. It is
+            the asking's own day, never the route's — two mornings of one
+            commute are two askings.
         requested_at:
           type: string
           format: date-time
@@ -2776,7 +2835,8 @@ components:
     RouteSeatRequest:
       type: object
       additionalProperties: false
-      required: [id, status, requested_at, decided_at, withdrawn_at, passenger]
+      required:
+        [id, status, service_date, requested_at, decided_at, withdrawn_at, passenger]
       description: |
         One asking on a journey the caller published.
 
@@ -2787,6 +2847,16 @@ components:
           $ref: '#/components/schemas/SeatRequestId'
         status:
           $ref: '#/components/schemas/SeatRequestStatus'
+        service_date:
+          allOf:
+            - $ref: '#/components/schemas/DepartureDate'
+          description: |
+            Which of the route's journeys this asking is for.
+
+            Always present. A one-off route has a single day and this is it; a
+            recurring plan has many and this is the one the member chose. It is
+            the asking's own day, never the route's — two mornings of one
+            commute are two askings.
         requested_at:
           type: string
           format: date-time

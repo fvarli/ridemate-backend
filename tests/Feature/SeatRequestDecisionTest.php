@@ -588,7 +588,181 @@ final class SeatRequestDecisionTest extends TestCase
         );
     }
 
+    // ------------------------------------- deciding a recurring journey
+
+    /**
+     * CARRIES WEIGHT. A day that has left cannot be accepted onto.
+     *
+     * And the reason names the day rather than the route: a plan is perfectly
+     * available — tomorrow included — so `route_unavailable` would be a false
+     * claim about it. This is the first refusal in the product that can only
+     * come from a recurring journey.
+     */
+    public function test_accepting_a_departed_recurring_journey_names_the_day(): void
+    {
+        [$driver, $route, $day] = $this->recurringAsk();
+
+        $refusal = $this->refusal(fn () => $this->accept(
+            $driver,
+            $this->id('01'),
+            $route->departure()->instantOn($day)->addHour(),
+        ));
+
+        self::assertSame(RefusalReason::ServiceDatePassed, $refusal->reason);
+    }
+
+    /** A one-off journey keeps the string it has answered since Phase 13. */
+    public function test_accepting_a_departed_one_off_journey_still_says_unavailable(): void
+    {
+        [$route, , $driver] = $this->asked();
+
+        $refusal = $this->refusal(fn () => $this->accept(
+            $driver,
+            $this->id('01'),
+            $route->departure()->instantOn($route->soleServiceDate())->addHour(),
+        ));
+
+        self::assertSame(RefusalReason::RouteUnavailable, $refusal->reason);
+    }
+
+    /** The asking is not rewritten by the day passing: pending stays pending. */
+    public function test_a_departed_recurring_asking_is_still_pending(): void
+    {
+        [$driver, $route, $day] = $this->recurringAsk();
+
+        $this->refusal(fn () => $this->accept(
+            $driver,
+            $this->id('01'),
+            $route->departure()->instantOn($day)->addHour(),
+        ));
+
+        self::assertSame(SeatRequestStatus::Pending, $this->row($this->id('01'))->status);
+    }
+
+    /** And the driver may still decline it afterwards. */
+    public function test_a_departed_recurring_asking_may_still_be_declined(): void
+    {
+        [$driver, $route, $day] = $this->recurringAsk();
+
+        $declined = $this->decline(
+            $driver,
+            $this->id('01'),
+            $route->departure()->instantOn($day)->addHour(),
+        );
+
+        self::assertSame(SeatRequestStatus::Declined, $declined->request->status);
+    }
+
+    /** As may the passenger withdraw it. */
+    public function test_a_departed_recurring_asking_may_still_be_withdrawn(): void
+    {
+        [, $route, $day, $passenger] = $this->recurringAsk();
+
+        $withdrawn = $this->withdraw(
+            $passenger,
+            $this->id('01'),
+            $route->departure()->instantOn($day)->addHour(),
+        );
+
+        self::assertSame(SeatRequestStatus::Withdrawn, $withdrawn->request->status);
+    }
+
+    /**
+     * CARRIES WEIGHT. A full Monday does not close Tuesday — now reachably.
+     *
+     * 16a proved this against a planted row. The same invariant, reached
+     * through the public commands for the first time.
+     */
+    public function test_a_full_day_of_a_plan_does_not_close_another(): void
+    {
+        $driver = $this->driver();
+        $route = $this->route($driver, seats: 1, recurrence: Recurrence::Weekdays);
+        $monday = $this->weekday(1);
+        $tuesday = $this->weekday(2);
+
+        $this->askOn($this->passenger(), $this->id('01'), $route, $monday);
+        $this->askOn($this->passenger('+905322220002'), $this->id('02'), $route, $tuesday);
+
+        $this->accept($driver, $this->id('01'));
+
+        self::assertSame(
+            SeatRequestStatus::Accepted,
+            $this->accept($driver, $this->id('02'))->request->status,
+        );
+    }
+
+    /** And the seat it took is gone for that day. */
+    public function test_a_full_day_of_a_plan_is_full_for_that_day(): void
+    {
+        $driver = $this->driver();
+        $route = $this->route($driver, seats: 1, recurrence: Recurrence::Weekdays);
+        $monday = $this->weekday(1);
+
+        $this->askOn($this->passenger(), $this->id('01'), $route, $monday);
+        $this->askOn($this->passenger('+905322220002'), $this->id('02'), $route, $monday);
+
+        $this->accept($driver, $this->id('01'));
+
+        self::assertSame(
+            RefusalReason::RouteFull,
+            $this->refusal(fn () => $this->accept($driver, $this->id('02')))->reason,
+        );
+    }
+
     // ------------------------------------------------------------- fixtures
+
+    /**
+     * A weekday plan with one pending asking on its next running day.
+     *
+     * @return array{0: Account, 1: Route, 2: CarbonImmutable, 3: Account}
+     */
+    private function recurringAsk(): array
+    {
+        $driver = $this->driver();
+        $route = $this->route($driver, recurrence: Recurrence::Weekdays);
+        $passenger = $this->passenger();
+        $day = $this->weekday(1);
+
+        $this->askOn($passenger, $this->id('01'), $route, $day);
+
+        return [$driver, $route, $day, $passenger];
+    }
+
+    private function askOn(
+        Account $passenger,
+        string $requestId,
+        Route $route,
+        CarbonImmutable $day,
+    ): void {
+        app(RequestSeat::class)($passenger, $requestId, $route->id, $day);
+    }
+
+    /**
+     * The [$nth] weekday strictly after today, in the pilot's zone.
+     *
+     * Walked rather than hard-coded: the suite runs on whatever day it runs on.
+     */
+    private function weekday(int $nth): CarbonImmutable
+    {
+        $timezone = config('ridemate.pilot.timezone');
+        self::assertIsString($timezone);
+
+        $day = CarbonImmutable::createFromFormat(
+            '!Y-m-d',
+            CarbonImmutable::now()->setTimezone($timezone)->format('Y-m-d'),
+        );
+        self::assertInstanceOf(CarbonImmutable::class, $day);
+
+        for ($found = 0; $found < $nth;) {
+            $day = $day->addDay();
+
+            if ($day->dayOfWeekIso <= 5) {
+                $found++;
+            }
+        }
+
+        return $day;
+    }
 
     /**
      * An accepted request on a date of this route, written straight to the row.
@@ -754,8 +928,11 @@ final class SeatRequestDecisionTest extends TestCase
         return $account;
     }
 
-    private function route(Account $driver, int $seats = 3): Route
-    {
+    private function route(
+        Account $driver,
+        int $seats = 3,
+        Recurrence $recurrence = Recurrence::Once,
+    ): Route {
         $timezone = config('ridemate.pilot.timezone');
         self::assertIsString($timezone);
 
@@ -765,8 +942,10 @@ final class SeatRequestDecisionTest extends TestCase
             $this->place(self::KADIKOY),
             $this->place(self::LEVENT),
             RouteDeparture::fromInput(
-                Recurrence::Once,
-                CarbonImmutable::now()->addDays(3)->format('Y-m-d'),
+                $recurrence,
+                $recurrence === Recurrence::Once
+                    ? CarbonImmutable::now()->addDays(3)->format('Y-m-d')
+                    : null,
                 '08:00',
                 $timezone,
             ),

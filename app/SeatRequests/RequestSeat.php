@@ -64,15 +64,17 @@ final class RequestSeat
         Account $passenger,
         string $requestId,
         string $routeId,
+        ?CarbonImmutable $serviceDate = null,
         ?CarbonImmutable $now = null,
     ): SeatRequested {
-        return DB::transaction(function () use ($passenger, $requestId, $routeId, $now): SeatRequested {
+        return DB::transaction(function () use ($passenger, $requestId, $routeId, $serviceDate, $now): SeatRequested {
             $existing = SeatRequest::query()->lockForUpdate()->find($requestId);
 
             if ($existing instanceof SeatRequest) {
-                // Deliberately terminal: no profile check, no route lookup, no
-                // eligibility. See the note above.
-                return $this->resolveExisting($existing, $passenger, $routeId);
+                // Deliberately terminal: no profile check, no eligibility, no
+                // clock. See the note above. A recurring caller's own named day
+                // completes the identity here without reading anything at all.
+                return $this->resolveExisting($existing, $passenger, $routeId, $serviceDate);
             }
 
             if (! $passenger->profile()->exists()) {
@@ -80,6 +82,9 @@ final class RequestSeat
             }
 
             $route = $this->eligibleRoute($passenger, $routeId, $now);
+            // Decided under the route lock, with everything it depends on read
+            // inside it: the recurrence, the clock and the horizon.
+            $journey = $this->serviceDate($route, $serviceDate, $now);
 
             try {
                 // A SAVEPOINT. PostgreSQL aborts the transactional scope a
@@ -89,10 +94,10 @@ final class RequestSeat
                 // rolls back to it, leaving the outer one — and the route lock
                 // — alive.
                 $request = DB::transaction(
-                    fn (): SeatRequest => $this->insert($passenger, $requestId, $route, $now),
+                    fn (): SeatRequest => $this->insert($passenger, $requestId, $route, $journey, $now),
                 );
             } catch (UniqueConstraintViolationException $violation) {
-                return $this->resolveRace($violation, $passenger, $requestId, $route);
+                return $this->resolveRace($violation, $passenger, $requestId, $route, $journey);
             }
 
             return new SeatRequested($request, wasAlreadyRequested: false);
@@ -133,27 +138,48 @@ final class RequestSeat
         SeatRequest $existing,
         Account $passenger,
         string $routeId,
-        ?Route $locked = null,
+        ?CarbonImmutable $named,
     ): SeatRequested {
         if ($existing->account_id !== $passenger->id || $existing->route_id !== $routeId) {
             throw SeatRequestRefused::idAlreadyUsed();
         }
 
-        // `$locked` is passed by the race path, which is already holding this
-        // route; everywhere else the row is read fresh and without a lock.
-        $route = $locked ?? Route::query()->find($routeId);
+        // A recurring caller names the day, so the identity is complete without
+        // reading anything. Only an older one-off client, which names none,
+        // needs the route — and it is read WITHOUT a lock, so the retry path
+        // still cannot put a `route → request` order into the system.
+        $day = $named ?? $this->soleDayOf($routeId);
 
-        if (! $route instanceof Route) {
-            $this->noSuchRoute($routeId);
-        }
-
-        if ($existing->service_date->toDateString() !== $route->soleServiceDate()->toDateString()) {
+        if ($existing->service_date->toDateString() !== $day->toDateString()) {
             throw SeatRequestRefused::idAlreadyUsed();
         }
 
         // Nothing is written, not even a timestamp: a retry is one asking
         // arriving twice, not a second event.
         return new SeatRequested($existing, wasAlreadyRequested: true);
+    }
+
+    /**
+     * The single day a route runs on, read without a lock.
+     *
+     * For the retry path only, and only when the caller named no day. A plan
+     * has no single day to fall back on, so a retry that names none cannot be
+     * matched against anything — which is a malformed request rather than a
+     * conflict, and is answered as one.
+     */
+    private function soleDayOf(string $routeId): CarbonImmutable
+    {
+        $route = Route::query()->find($routeId);
+
+        if (! $route instanceof Route) {
+            $this->noSuchRoute($routeId);
+        }
+
+        if ($route->recurrence !== Recurrence::Once) {
+            throw ServiceDateRefused::missing();
+        }
+
+        return $route->soleServiceDate();
     }
 
     /**
@@ -180,19 +206,69 @@ final class RequestSeat
             $this->noSuchRoute($routeId);
         }
 
-        if ($route->recurrence !== Recurrence::Once) {
-            // Safe to name: a published, upcoming weekday route is publicly
-            // discoverable, so its existence is not a secret.
-            throw SeatRequestRefused::recurringRouteUnsupported();
+        return $route;
+    }
+
+    /**
+     * Which dated journey this asking is for.
+     *
+     * A ROUTE IS A PLAN; AN ASKING IS FOR ONE OF ITS DAYS
+     *
+     * A one-off route has a single day, so the caller need not name it and
+     * older clients do not — but if they do, it must be that day. A plan has
+     * many, so the day is required and is checked against three separate
+     * questions, each with its own answer: does the route run then, is it
+     * inside the horizon, and has it already left.
+     *
+     * Every check is made here, under the route lock, against values read
+     * inside it. All of them reuse the route's own departure semantics rather
+     * than doing arithmetic of their own — one definition of a weekday, one of
+     * the route's today, one of when a dated journey leaves.
+     */
+    private function serviceDate(
+        Route $route,
+        ?CarbonImmutable $named,
+        ?CarbonImmutable $now,
+    ): CarbonImmutable {
+        $departure = $route->departure();
+
+        if ($route->recurrence === Recurrence::Once) {
+            $only = $route->soleServiceDate();
+
+            if ($named !== null && $named->format('Y-m-d') !== $only->format('Y-m-d')) {
+                throw ServiceDateRefused::notThisRoutesDay($named);
+            }
+
+            // Departure is already the eligibility check above for a one-off
+            // route, which answers 404 rather than naming a date — Phase 13's
+            // behaviour, unchanged.
+            return $only;
         }
 
-        return $route;
+        if ($named === null) {
+            throw ServiceDateRefused::missing();
+        }
+
+        if (! $departure->runsOn($named)) {
+            throw ServiceDateRefused::notAServiceDate($named);
+        }
+
+        if (! SeatRequestHorizon::admits($departure, $named, $now)) {
+            throw ServiceDateRefused::beyondHorizon($named);
+        }
+
+        if ($departure->hasDeparted($named, $now)) {
+            throw ServiceDateRefused::alreadyDeparted($named);
+        }
+
+        return $named;
     }
 
     private function insert(
         Account $passenger,
         string $requestId,
         Route $route,
+        CarbonImmutable $serviceDate,
         ?CarbonImmutable $now,
     ): SeatRequest {
         $request = new SeatRequest;
@@ -201,10 +277,8 @@ final class RequestSeat
         // retry a new asking.
         $request->id = $requestId;
         $request->route_id = $route->id;
-        // Which dated journey is being asked about. Derived rather than named
-        // by the caller, because a one-off route has exactly one and the
-        // recurrence guard above has already refused everything else.
-        $request->service_date = $route->soleServiceDate();
+        // The journey this asking is for, resolved and checked above.
+        $request->service_date = $serviceDate;
         $request->account_id = $passenger->id;
         $request->status = SeatRequestStatus::Pending;
         $request->requested_at = $now ?? CarbonImmutable::now();
@@ -232,6 +306,7 @@ final class RequestSeat
         Account $passenger,
         string $requestId,
         Route $route,
+        CarbonImmutable $serviceDate,
     ): SeatRequested {
         $byId = SeatRequest::query()->find($requestId);
 
@@ -239,7 +314,7 @@ final class RequestSeat
             // Same answer as a retry that never raced: identity decides. The
             // route is already locked here, so it is handed over rather than
             // read again.
-            return $this->resolveExisting($byId, $passenger, $route->id, $route);
+            return $this->resolveExisting($byId, $passenger, $route->id, $serviceDate);
         }
 
         // Scoped to the dated journey, not merely to the route: a member may
@@ -247,7 +322,7 @@ final class RequestSeat
         // the one that collided rather than whichever row is found first.
         $byMember = SeatRequest::query()
             ->where('route_id', $route->id)
-            ->where('service_date', $route->soleServiceDate()->toDateString())
+            ->where('service_date', $serviceDate->toDateString())
             ->where('account_id', $passenger->id)
             ->first();
 

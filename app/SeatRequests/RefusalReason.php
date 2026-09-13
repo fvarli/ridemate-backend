@@ -73,5 +73,21 @@ enum RefusalReason: string
     case RouteUnavailable = 'route_unavailable';
 
     /** Every offered seat is already accepted. */
+    /**
+     * The journey that asking is for has already left.
+     *
+     * Only a dated journey of a RECURRING plan raises this. A one-off route
+     * answers `route_unavailable`, which is what it has answered since Phase 13
+     * and what shipped clients map — and for a plan that string would be a
+     * false claim anyway: the route is perfectly available, tomorrow included.
+     * It is the day that is gone.
+     *
+     * Raised by accept, never by asking: a create names a date that has passed
+     * is a `422` on the field, because the client's own picker could have
+     * ruled it out. This one is mutable state that moved underneath a request
+     * which already exists.
+     */
+    case ServiceDatePassed = 'service_date_passed';
+
     case RouteFull = 'route_full';
 }

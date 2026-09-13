@@ -88,6 +88,10 @@ final class MySeatRequestPayload
         return [
             'id' => $request->id,
             'status' => $request->status->value,
+            // Which of the plan's journeys this asking is for. Always present:
+            // a one-off route has a single day, and a plan names the one that
+            // was chosen. It is the asking's own, never the route's.
+            'service_date' => $request->service_date->format('Y-m-d'),
             'requested_at' => $request->requested_at->toIso8601ZuluString(),
             'decided_at' => $request->decided_at?->toIso8601ZuluString(),
             'withdrawn_at' => $request->withdrawn_at?->toIso8601ZuluString(),

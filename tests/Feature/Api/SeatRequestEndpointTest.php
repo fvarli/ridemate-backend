@@ -160,14 +160,64 @@ final class SeatRequestEndpointTest extends TestCase
             ->assertJsonPath('error.details.reason', 'own_route');
     }
 
-    public function test_a_recurring_journey_is_a_409(): void
+    /**
+     * CARRIES WEIGHT. A weekday plan can be asked about, for a named day.
+     *
+     * The dead end Phase 13 recorded — `recurring_route_unsupported` — is gone
+     * from this endpoint, and the day the member chose comes back on the row.
+     */
+    public function test_a_recurring_journey_may_be_asked_about_for_a_day(): void
     {
-        [$driver, $routeId] = $this->publishedJourney(recurring: true);
+        [, $routeId] = $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+        $monday = $this->weekday(1);
+
+        $this->ask($passenger, $routeId, 1, $monday)
+            ->assertStatus(201)
+            ->assertJsonPath('seat_request.service_date', $monday);
+    }
+
+    /**
+     * CARRIES WEIGHT. A day the plan cannot honour is a 422 on the field.
+     *
+     * Not a refusal: the client's own picker rules a weekend out before it
+     * sends anything, so a value that arrives is a malformed request rather
+     * than a conflict nobody can branch on.
+     */
+    public function test_a_day_the_plan_does_not_run_on_is_a_422(): void
+    {
+        [, $routeId] = $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        $saturday = CarbonImmutable::parse($this->weekday(1));
+        while ($saturday->dayOfWeekIso !== 6) {
+            $saturday = $saturday->addDay();
+        }
+
+        $this->ask($passenger, $routeId, 1, $saturday->format('Y-m-d'))
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'validation_failed')
+            ->assertJsonStructure(['error' => ['details' => ['service_date']]]);
+    }
+
+    /** And so is a plan asked about with no day at all. */
+    public function test_a_recurring_journey_without_a_day_is_a_422(): void
+    {
+        [, $routeId] = $this->publishedJourney(recurring: true);
         $passenger = $this->member('+905322220001', 'Ayşe Demir');
 
         $this->ask($passenger, $routeId, 1)
-            ->assertStatus(409)
-            ->assertJsonPath('error.details.reason', 'recurring_route_unsupported');
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'validation_failed');
+    }
+
+    /** A one-off journey still needs no day, and still answers 201. */
+    public function test_a_one_off_journey_may_still_be_asked_about_without_a_day(): void
+    {
+        [, $routeId] = $this->publishedJourney();
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        $this->ask($passenger, $routeId, 1)->assertStatus(201);
     }
 
     /**
@@ -517,13 +567,41 @@ final class SeatRequestEndpointTest extends TestCase
      * @param  array<string, string>  $headers
      * @return TestResponse<JsonResponse>
      */
-    private function ask(array $headers, string $routeId, int $n): TestResponse
-    {
+    private function ask(
+        array $headers,
+        string $routeId,
+        int $n,
+        ?string $serviceDate = null,
+    ): TestResponse {
         return $this->postJson(
             "/api/v1/routes/$routeId/seat-requests",
-            ['id' => $this->id($n)],
+            [
+                'id' => $this->id($n),
+                // Absent unless named: a one-off client that predates dated
+                // journeys sends exactly what it always sent.
+                ...($serviceDate === null ? [] : ['service_date' => $serviceDate]),
+            ],
             $headers,
         );
+    }
+
+    /** The [$nth] weekday strictly after today, in the pilot's zone. */
+    private function weekday(int $nth): string
+    {
+        $timezone = config('ridemate.pilot.timezone');
+        self::assertIsString($timezone);
+
+        $day = CarbonImmutable::now()->setTimezone($timezone)->startOfDay();
+
+        for ($found = 0; $found < $nth;) {
+            $day = $day->addDay();
+
+            if ($day->dayOfWeekIso <= 5) {
+                $found++;
+            }
+        }
+
+        return $day->format('Y-m-d');
     }
 
     /**
