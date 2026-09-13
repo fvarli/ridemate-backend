@@ -128,7 +128,7 @@ final class TripLifecycleProjectionTest extends TestCase
     public function test_a_completed_journey_carries_its_ending(): void
     {
         [$driver, $routeId] = $this->startedJourney();
-        app(CompleteTrip::class)($this->account($driver), $routeId, $this->departed()->addHour());
+        app(CompleteTrip::class)($this->account($driver), $routeId, now: $this->departed()->addHour());
 
         $trip = $this->myRoutes($driver)['routes'][0]['trip'];
 
@@ -141,7 +141,7 @@ final class TripLifecycleProjectionTest extends TestCase
     public function test_an_abandoned_journey_carries_its_ending(): void
     {
         [$driver, $routeId] = $this->startedJourney();
-        app(AbortTrip::class)($this->account($driver), $routeId, $this->departed()->addHour());
+        app(AbortTrip::class)($this->account($driver), $routeId, now: $this->departed()->addHour());
 
         $trip = $this->myRoutes($driver)['routes'][0]['trip'];
 
@@ -249,7 +249,7 @@ final class TripLifecycleProjectionTest extends TestCase
         self::assertSame('published', $request['route']['status']);
         self::assertSame('not_started', $request['route']['trip']['state']);
 
-        app(StartTrip::class)($this->account($driver), $routeId, $this->travelToDeparture());
+        app(StartTrip::class)($this->account($driver), $routeId, now: $this->travelToDeparture());
 
         $running = $this->mySeatRequests($passenger)['seat_requests'][0];
 
@@ -270,8 +270,8 @@ final class TripLifecycleProjectionTest extends TestCase
     public function test_an_accepted_request_survives_the_journey_being_completed(): void
     {
         [$driver, $routeId, $passenger] = $this->askedAndAccepted();
-        app(StartTrip::class)($this->account($driver), $routeId, $this->travelToDeparture());
-        app(CompleteTrip::class)($this->account($driver), $routeId, $this->departed()->addHour());
+        app(StartTrip::class)($this->account($driver), $routeId, now: $this->travelToDeparture());
+        app(CompleteTrip::class)($this->account($driver), $routeId, now: $this->departed()->addHour());
 
         $request = $this->mySeatRequests($passenger)['seat_requests'][0];
 
@@ -295,7 +295,7 @@ final class TripLifecycleProjectionTest extends TestCase
     public function test_a_pending_request_can_sit_on_a_running_journey(): void
     {
         [$driver, $routeId, $passenger] = $this->askedAndAccepted(accept: false);
-        app(StartTrip::class)($this->account($driver), $routeId, $this->travelToDeparture());
+        app(StartTrip::class)($this->account($driver), $routeId, now: $this->travelToDeparture());
 
         $request = $this->mySeatRequests($passenger)['seat_requests'][0];
 
@@ -306,7 +306,7 @@ final class TripLifecycleProjectionTest extends TestCase
     public function test_the_passengers_trip_object_carries_no_id_either(): void
     {
         [$driver, $routeId, $passenger] = $this->askedAndAccepted();
-        app(StartTrip::class)($this->account($driver), $routeId, $this->travelToDeparture());
+        app(StartTrip::class)($this->account($driver), $routeId, now: $this->travelToDeparture());
 
         $trip = $this->mySeatRequests($passenger)['seat_requests'][0]['route']['trip'];
 
@@ -419,7 +419,7 @@ final class TripLifecycleProjectionTest extends TestCase
 
         $at = $this->travelToDeparture();
         foreach ([1, 2, 3, 4] as $n) {
-            app(StartTrip::class)($this->account($driver), $this->routeId($n), $at);
+            app(StartTrip::class)($this->account($driver), $this->routeId($n), now: $at);
         }
 
         $one = $this->queriesFor(fn () => $this->myRoutes($driver, limit: 1));
@@ -448,7 +448,7 @@ final class TripLifecycleProjectionTest extends TestCase
 
         $at = $this->travelToDeparture();
         for ($n = 1; $n <= 4; $n++) {
-            app(StartTrip::class)($this->account($driver), $this->routeId($n), $at);
+            app(StartTrip::class)($this->account($driver), $this->routeId($n), now: $at);
         }
 
         $one = $this->queriesFor(fn () => $this->mySeatRequests($passenger, limit: 1));
@@ -588,7 +588,7 @@ final class TripLifecycleProjectionTest extends TestCase
     {
         $driver = $this->member('+905321110000', 'İrem Yılmaz');
         $this->publish($driver, 1);
-        app(StartTrip::class)($this->account($driver), $this->routeId(1), $this->travelToDeparture());
+        app(StartTrip::class)($this->account($driver), $this->routeId(1), now: $this->travelToDeparture());
 
         return [$driver, $this->routeId(1)];
     }

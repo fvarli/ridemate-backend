@@ -458,23 +458,36 @@ nothing takes them the other way round.
 
 ### Starting
 
-`POST /api/v1/routes/{routeId}/trip/start` — bodyless, `201` the first time and `200` for a
-repeat, both carrying the same trip.
+`POST /api/v1/routes/{routeId}/journeys/{serviceDate}/trip/start` — bodyless, `201` the first
+time and `200` for a repeat, both carrying the same trip.
+`POST /api/v1/routes/{routeId}/trip/start` is the compatibility form kept from Phase 14: it
+names no day, so it addresses a one-off route's single journey and refuses a plan with
+`recurring_route_unsupported` rather than guessing which day was meant. Both forms resolve the
+journey through `App\Trips\CommandedJourney`, so they cannot drift.
 
 **An existing trip is resolved before anything mutable is checked.** Start names a single
 target state, so a repeat must keep succeeding however the world has moved on since;
 checking route eligibility first would make a command that already succeeded begin to fail
-later. Only a route with no trip reaches the eligibility checks at all — and their order is
+later. Phase 16b gives that rule teeth: a journey started on Tuesday evening is still
+`in_progress` at one in the morning on Wednesday, and Tuesday is over — so a replay then would
+answer `service_date_passed` about the journey the driver is sitting in, if eligibility ran
+first. It does not.
+
+Only a journey with no trip reaches the eligibility checks at all — and their order is
 load-bearing:
 
-1. **recurrence** — a weekday plan has no single departure to make, so it is refused first.
-   `RouteDeparture::state` calls a recurring route upcoming for ever, and a clock check placed
-   above this would answer `departure_not_reached` for every commute and make
-   `recurring_route_unsupported` unreachable.
-2. **availability** — a withdrawn journey is refused before the clock, so a driver is told the
+1. **availability** — a withdrawn journey is refused before the clock, so a driver is told the
    journey is gone rather than told to wait for something that will never become possible.
-3. **the departure instant**, read in the route's own timezone. **No grace window**: an early
-   start would be the server agreeing to something that has not happened.
+2. **the departure instant** for that day, read in the route's own timezone. **No grace
+   window**: an early start would be the server agreeing to something that has not happened.
+3. **the service date, for a plan only** — a plan's journey belongs to one calendar date in the
+   route's zone, and once that date has ended there it is `service_date_passed`. Wednesday
+   morning is a different journey with its own command.
+
+A one-off route keeps Phase 14's open-ended window: once its departure is past it can be
+started, with no upper bound. The asymmetry is deliberate — a one-off journey has no next
+occurrence for a late start to be confused with, and narrowing it would take something away
+from drivers to make two unlike things look alike.
 
 **No passenger is required.** A driver making the journey alone is making the journey, and
 requiring an accepted seat would let an empty car block a departure that is happening anyway.
@@ -512,18 +525,23 @@ state is derived from a cancelled route.
 
 ### Refusals
 
-Six reasons, published at `error.details.reason` with `409 conflict`. Renaming one is a
+Seven reasons, published at `error.details.reason` with `409 conflict`. Renaming one is a
 breaking change; clients map each to their own approved copy, because `message` is
 developer-facing English no client displays.
 
 | reason | means |
 |---|---|
-| `recurring_route_unsupported` | a weekday plan has no single departure to make |
+| `recurring_route_unsupported` | the route-only form cannot address a plan's journey |
 | `departure_not_reached` | the scheduled time has not arrived, in the route's own timezone |
+| `service_date_passed` | that day is over where the route is — Start only |
 | `route_unavailable` | the journey was withdrawn |
 | `trip_not_started` | there is nothing to complete or abandon |
 | `already_completed` | the journey was already reported as made |
 | `already_aborted` | the journey was already abandoned |
+
+`service_date_passed` bounds Start alone. Completing or abandoning a journey that already
+exists has no calendar bound, and a withdrawn plan does not block either — otherwise a
+cancellation would leave a trip `in_progress` for ever with no honest way out.
 
 Two of these strings are also seat-request reasons, deliberately: the same meaning deserves
 the same wire string, which keeps a client's mapping simple. The two vocabularies stay
@@ -532,8 +550,13 @@ they overlap, `Error.details.reason` is `anyOf` rather than `oneOf`, which would
 exactly the values both enums share.
 
 There is no `trip_already_started`. It would only have described a route cancellation refused
-because a trip exists, and that refusal is unreachable: a one-off route is cancellable only
-while its departure is upcoming, and a trip can only start once it is past.
+because a trip exists, and nothing refuses that — `CancelRoute` never reads a trip. Phase 14
+justified this by saying the two windows could not overlap: a one-off route is cancellable
+only while its departure is upcoming, and a trip only startable once it is past. That held for
+one-off routes and does not hold for plans — a weekday plan is upcoming for ever, so it can be
+cancelled while Tuesday's journey is under way. The conclusion survives for a better reason:
+cancelling a plan says no *future* journey will run, it does not rewrite one already
+happening, and the driver on that one must still be able to finish or abandon it.
 
 ### Where the lifecycle is published
 

@@ -720,19 +720,24 @@ final class RouteContractTest extends TestCase
     /**
      * The two vocabularies overlap on purpose, and stay separate anyway.
      *
-     * `route_unavailable` means the same thing in both domains and therefore
-     * carries the same wire string. That overlap is exactly why
-     * `Error.details.reason` is `anyOf` and not `oneOf`: a value in both
+     * `route_unavailable` and `service_date_passed` mean the same thing in both
+     * domains and therefore carry the same wire string. That overlap is exactly
+     * why `Error.details.reason` is `anyOf` and not `oneOf`: a value in both
      * branches matches twice, which `oneOf` rejects. This asserts the overlap is
      * real, so the choice cannot be undone as a tidy-up.
      *
-     * `recurring_route_unsupported` was the second until Phase 16b. A passenger
-     * can now ask for a seat on a named day of a weekday plan, so no seat
-     * request can produce it and the seat vocabulary stopped publishing it —
-     * an enum advertising an outcome its surface cannot reach is a stale
-     * contract, not a compatibility guarantee. It remains a trip reason,
-     * because the legacy bodyless trip endpoints still take one-off routes
-     * only, and this asserts it is gone from exactly one of the two.
+     * `service_date_passed` joined it in Phase 16b B5, from the other side: the
+     * seat vocabulary had it first, and starting a plan's journey after its day
+     * is the trip domain's version of the same sentence. Two independent enums
+     * arriving at one word is the outcome the split was designed to allow.
+     *
+     * `recurring_route_unsupported` was shared until Phase 16b. A passenger can
+     * now ask for a seat on a named day of a weekday plan, so no seat request
+     * can produce it and the seat vocabulary stopped publishing it — an enum
+     * advertising an outcome its surface cannot reach is a stale contract, not a
+     * compatibility guarantee. It remains a trip reason, because the route-only
+     * trip endpoints still address one-off journeys only, and this asserts it is
+     * gone from exactly one of the two.
      */
     public function test_the_shared_reasons_are_documented_by_both_domains(): void
     {
@@ -744,10 +749,10 @@ final class RouteContractTest extends TestCase
         /** @var list<string> $seat */
         $seat = $schemas['SeatRequestRefusalReason']['enum'];
 
-        self::assertSame(
-            ['route_unavailable'],
-            array_values(array_intersect($trip, $seat)),
-        );
+        $shared = array_values(array_intersect($trip, $seat));
+        sort($shared);
+
+        self::assertSame(['route_unavailable', 'service_date_passed'], $shared);
 
         // Still a trip reason, and no longer a seat-request one.
         self::assertContains('recurring_route_unsupported', $trip);

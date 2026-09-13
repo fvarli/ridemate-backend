@@ -187,24 +187,54 @@ Route::post('routes/{routeId}/cancel', CancelRouteController::class)
 /*
  * Making the journey.
  *
- * Three commands, all the driver's, all route-scoped: a trip has no identifier
- * of its own because a route has at most one and nothing needs to name it
- * separately. `{routeId}` carries the same UUIDv7 constraint as its neighbours,
- * so a malformed id never matches and becomes an ordinary 404 rather than a 422
- * the contract does not describe.
+ * Three commands, all the driver's, and each reachable two ways.
  *
- * All three are bodyless. Each names the state it wants rather than a change to
+ * THE DATED FORM IS THE REAL ONE
+ *
+ * A journey is a route on a service date, so a command about one says which.
+ * `{serviceDate}` is constrained to the shape of a calendar day, which is all a
+ * pattern can check; whether it is a real date, and whether the route runs on
+ * it, are the domain's to answer — and both answer 404, the same as a route
+ * that is not the caller's.
+ *
+ * THE ROUTE-ONLY FORM IS KEPT, AND STAYS ONE-OFF ONLY
+ *
+ * It was the whole surface in Phase 14 and clients still send it. It resolves a
+ * one-off route's single journey and refuses a plan with
+ * `recurring_route_unsupported` rather than guessing which day was meant. It is
+ * not deprecated and not scheduled for removal: for a one-off route it is
+ * exactly as correct as it ever was.
+ *
+ * All six are bodyless. Each names the state it wants rather than a change to
  * apply, so a retry after a lost response is the same command observed again —
  * tier 2 in `docs/api-conventions.md`, and the reason no `Idempotency-Key`
  * exists anywhere in this API.
  *
  * There is no passenger counterpart. Nothing here records who boarded, and
- * attendance is not a thing this phase knows.
+ * attendance is not a thing this product knows.
  *
  * Not throttled, for the same reason the other authenticated writes are not:
  * the per-address budgets guard the endpoints that hand out credentials, and
  * these already require one.
  */
+Route::post('routes/{routeId}/journeys/{serviceDate}/trip/start', StartTripController::class)
+    ->middleware('auth.token')
+    ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->where('serviceDate', '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+    ->name('routes.journeys.trip.start');
+
+Route::post('routes/{routeId}/journeys/{serviceDate}/trip/complete', CompleteTripController::class)
+    ->middleware('auth.token')
+    ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->where('serviceDate', '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+    ->name('routes.journeys.trip.complete');
+
+Route::post('routes/{routeId}/journeys/{serviceDate}/trip/abort', AbortTripController::class)
+    ->middleware('auth.token')
+    ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')
+    ->where('serviceDate', '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+    ->name('routes.journeys.trip.abort');
+
 Route::post('routes/{routeId}/trip/start', StartTripController::class)
     ->middleware('auth.token')
     ->where('routeId', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}')

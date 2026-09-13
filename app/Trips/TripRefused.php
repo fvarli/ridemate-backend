@@ -26,7 +26,7 @@ final class TripRefused extends RuntimeException
     {
         return new self(
             RefusalReason::RecurringRouteUnsupported,
-            'Trips are supported for one-off journeys only.',
+            'A recurring plan has many journeys, so this command must name a service date.',
         );
     }
 
@@ -35,6 +35,14 @@ final class TripRefused extends RuntimeException
         return new self(
             RefusalReason::DepartureNotReached,
             'The scheduled departure has not been reached in the route timezone.',
+        );
+    }
+
+    public static function serviceDatePassed(): self
+    {
+        return new self(
+            RefusalReason::ServiceDatePassed,
+            'That journey ran on a day that is now over in the route timezone.',
         );
     }
 

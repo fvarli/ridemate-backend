@@ -784,6 +784,189 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
+  /api/v1/routes/{routeId}/journeys/{serviceDate}/trip/start:
+    post:
+      operationId: startJourneyTrip
+      tags: [Trips]
+      summary: Say one dated journey is under way
+      security:
+        - bearerAuth: []
+      description: |
+        The driver who published the plan says the journey on this day is
+        happening.
+
+        **Naturally idempotent, and therefore has no request body.** A journey
+        has at most one trip, so `(route_id, service_date)` is the idempotency
+        key and no client `Idempotency-Key` exists: a retry after a lost response
+        is the same start observed again, and answers `200` with `started_at`
+        exactly where it was.
+
+        **The window is one calendar day wide, read in the route's timezone.**
+
+        - Before `departure_time` on that day — `departure_not_reached`. There is
+          no grace window; the server is the clock.
+        - From that instant until the day ends where the route is — the journey
+          may be started.
+        - Once that date is over there — `service_date_passed`. Starting it then
+          would record a journey as beginning on a date behind the driver, and
+          the next day's journey is a different one with its own command.
+
+        **A journey already under way replays whatever the clock says.** The
+        existing trip is resolved before any eligibility is considered, so a
+        driver who started on Tuesday evening and retries at one in the morning
+        on Wednesday is answered `200` with the journey they are on — not
+        `service_date_passed` about it.
+
+        - **201** — the trip was created. This is the only lifecycle command that
+          creates anything.
+        - **200** — the journey was already under way. Nothing was written.
+        - **409** — `departure_not_reached`, `service_date_passed`,
+          `route_unavailable` for a withdrawn plan, and `already_completed` or
+          `already_aborted` where the journey has already ended.
+        - **404** — the route is not the caller's, or this route has no journey
+          on that day: a Saturday on a weekday plan, any day but its own on a
+          one-off route, or a date that is not a real calendar day. They answer
+          alike so that none of them says which routes exist.
+
+        A journey with no accepted passengers can still be started. The driver is
+        making it either way.
+
+        **`in_progress` means this command was accepted and nothing else.** Not
+        that the driver is at the origin, that anything is moving, that anybody
+        boarded, or that any location is known. There are no coordinates in this
+        API.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+        - $ref: '#/components/parameters/ServiceDate'
+      responses:
+        '201':
+          description: The journey is under way.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripEnvelope'
+        '200':
+          description: |
+            The same start, already recorded. A retry of one that landed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TripConflict'
+
+  /api/v1/routes/{routeId}/journeys/{serviceDate}/trip/complete:
+    post:
+      operationId: completeJourneyTrip
+      tags: [Trips]
+      summary: Say one dated journey was made
+      security:
+        - bearerAuth: []
+      description: |
+        **Naturally idempotent, and therefore has no request body.** A repeat
+        answers `200` with `completed_at` unmoved and writes nothing.
+
+        **`200` and never `201`.** Nothing is created — the trip already exists.
+
+        **There is no calendar bound here.** Start is bounded to one day because
+        it creates something dated; a journey that already exists is ended on the
+        day it is ended. A journey that ran past midnight is completed the
+        morning after, and one whose plan was withdrawn while it ran is
+        completed anyway — otherwise a withdrawal would leave a trip
+        `in_progress` for ever with no honest way out.
+
+        Whether the journey was eligible to start is not asked again, for the
+        same reason.
+
+        - **409** — `trip_not_started` where nobody started one on this day, and
+          `already_aborted` where the driver already said it did not happen.
+        - **404** — the route is not the caller's, or it has no journey on that
+          day.
+
+        **`completed` means the driver said the journey was made.** Not that
+        anybody boarded, that anywhere was reached, that anything is owed, or
+        that anybody may now be reviewed. Accepted seat requests are untouched.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+        - $ref: '#/components/parameters/ServiceDate'
+      responses:
+        '200':
+          description: The journey is recorded as made, or was already.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TripConflict'
+
+  /api/v1/routes/{routeId}/journeys/{serviceDate}/trip/abort:
+    post:
+      operationId: abortJourneyTrip
+      tags: [Trips]
+      summary: Say one dated journey was abandoned
+      security:
+        - bearerAuth: []
+      description: |
+        **Naturally idempotent, and therefore has no request body.** A repeat
+        answers `200` with `aborted_at` unmoved.
+
+        **No reason is accepted or stored.** A taxonomy of why a journey was
+        abandoned is a design nobody has made, and a free-text field would be
+        somewhere a member could write anything about somebody else.
+
+        Mirrors completion exactly, including that there is no calendar bound and
+        that a withdrawn plan does not block it:
+        - **409** — `trip_not_started`, and `already_completed` where the driver
+          already said the journey was made.
+        - **404** — the route is not the caller's, or it has no journey on that
+          day.
+
+        Seat requests are untouched. Nothing is cancelled, nobody is notified,
+        and no obligation is created or released — this product has no
+        notifications.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+        - $ref: '#/components/parameters/ServiceDate'
+      responses:
+        '200':
+          description: The journey is recorded as abandoned, or was already.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TripConflict'
+
   /api/v1/routes/{routeId}/trip/start:
     post:
       operationId: startTrip
@@ -794,20 +977,36 @@ paths:
       description: |
         The driver who published the journey says it is happening.
 
-        **Naturally idempotent, and therefore has no request body.** A route has
-        at most one trip, so the route is the idempotency key and no client
-        `Idempotency-Key` exists: a retry after a lost response is the same start
-        observed again, and answers `200` with `started_at` exactly where it was.
+        **The compatibility form, for one-off journeys only.** It names no
+        service date, so it addresses a one-off route's single journey and
+        nothing else. A recurring plan is refused with
+        `recurring_route_unsupported`: it has a journey per day it runs, and
+        choosing "today" for a caller who named no day would act on a journey
+        they did not mean. Use
+        `/api/v1/routes/{routeId}/journeys/{serviceDate}/trip/start` for a
+        plan's journey. This endpoint is not deprecated — for a one-off route it
+        is exactly as correct as it has always been.
+
+        **Naturally idempotent, and therefore has no request body.** A one-off
+        route has at most one journey and that journey at most one trip, so the
+        route is the idempotency key here and no client `Idempotency-Key`
+        exists: a retry after a lost response is the same start observed again,
+        and answers `200` with `started_at` exactly where it was.
 
         - **201** — the trip was created. This is the only lifecycle command that
           creates anything.
         - **200** — the journey was already under way. Nothing was written.
-        - **409** — `recurring_route_unsupported` for a weekday plan, which has
-          no single departure to make; `departure_not_reached` before the
-          scheduled time in the route's own timezone, with no grace window;
-          `route_unavailable` for a journey that was withdrawn; and
-          `already_completed` or `already_aborted` where the journey has already
-          ended, because that is a different claim rather than a repeat.
+        - **409** — `recurring_route_unsupported` for a weekday plan, which this
+          form cannot address; `departure_not_reached` before the scheduled time
+          in the route's own timezone, with no grace window; `route_unavailable`
+          for a journey that was withdrawn; and `already_completed` or
+          `already_aborted` where the journey has already ended, because that is
+          a different claim rather than a repeat.
+
+        **There is no upper bound.** A one-off journey can be started days after
+        its departure. It has no next occurrence for a late start to be confused
+        with, so it does not carry the plan's `service_date_passed` rule — the
+        asymmetry is deliberate and takes nothing away from anybody.
         - **404** — the route is not the caller's. A member cannot learn that
           somebody else's journey exists by trying to start it.
 
@@ -857,6 +1056,16 @@ paths:
       security:
         - bearerAuth: []
       description: |
+        **The compatibility form, for one-off journeys only.** It names no
+        service date, so it addresses a one-off route's single journey and
+        nothing else. A recurring plan is refused with
+        `recurring_route_unsupported`: it has a journey per day it runs, and
+        choosing "today" for a caller who named no day would act on a journey
+        they did not mean. Use
+        `/api/v1/routes/{routeId}/journeys/{serviceDate}/trip/complete` for a
+        plan's journey. This endpoint is not deprecated — for a one-off route it
+        is exactly as correct as it has always been.
+
         **Naturally idempotent, and therefore has no request body.** The
         transition names the state it wants, so running it twice answers `200`
         with `completed_at` unmoved and writes nothing.
@@ -864,13 +1073,14 @@ paths:
         **`200` and never `201`.** Nothing is created — the trip already exists,
         and a second resource did not appear.
 
-        Whether the journey was eligible to start is not asked again. Recurrence,
-        publication state and the departure instant were answered when it began;
-        re-checking them here would let a journey that is demonstrably under way
-        become impossible to finish because its route changed afterwards, and a
-        driver stuck with a permanently running trip has no honest way out.
+        Whether the journey was eligible to start is not asked again. Publication
+        state and the departure instant were answered when it began; re-checking
+        them here would let a journey that is demonstrably under way become
+        impossible to finish because its route changed afterwards, and a driver
+        stuck with a permanently running trip has no honest way out.
 
-        - **409** — `trip_not_started` where nobody started one, and
+        - **409** — `recurring_route_unsupported` for a plan, which this form
+          cannot address; `trip_not_started` where nobody started one; and
           `already_aborted` where the driver already said it did not happen.
           Overwriting that would be rewriting the record rather than repeating a
           command.
@@ -909,6 +1119,16 @@ paths:
       security:
         - bearerAuth: []
       description: |
+        **The compatibility form, for one-off journeys only.** It names no
+        service date, so it addresses a one-off route's single journey and
+        nothing else. A recurring plan is refused with
+        `recurring_route_unsupported`: it has a journey per day it runs, and
+        choosing "today" for a caller who named no day would act on a journey
+        they did not mean. Use
+        `/api/v1/routes/{routeId}/journeys/{serviceDate}/trip/abort` for a
+        plan's journey. This endpoint is not deprecated — for a one-off route it
+        is exactly as correct as it has always been.
+
         **Naturally idempotent, and therefore has no request body.** A repeat
         answers `200` with `aborted_at` unmoved.
 
@@ -917,8 +1137,9 @@ paths:
         somewhere a member could write anything about somebody else.
 
         Mirrors completion exactly, including that eligibility is not re-checked:
-        - **409** — `trip_not_started`, and `already_completed` where the driver
-          already said the journey was made.
+        - **409** — `recurring_route_unsupported` for a plan; `trip_not_started`;
+          and `already_completed` where the driver already said the journey was
+          made.
         - **404** — the route is not the caller's.
 
         Seat requests are untouched. Nothing is cancelled, nobody is notified,
@@ -973,8 +1194,10 @@ paths:
         under a different id is refused, and a withdrawn or declined request does
         not free the slot — re-requesting is not a policy this phase has.
 
-        Phase 13 accepts **one-off journeys only**. A recurring plan has no single
-        departure to hold a seat on.
+        **A recurring plan is asked about one day at a time.** `service_date` is
+        required for one, and bounded — see the field's own description. A
+        one-off route has a single day and may omit it. (Until Phase 16b this
+        endpoint accepted one-off routes only; that is no longer true.)
       parameters:
         - $ref: '#/components/parameters/RouteId'
       requestBody:
@@ -2520,6 +2743,7 @@ components:
       enum:
         - recurring_route_unsupported
         - departure_not_reached
+        - service_date_passed
         - route_unavailable
         - trip_not_started
         - already_completed
@@ -2535,15 +2759,28 @@ components:
         particular is authoritative mutable state and not a validation failure:
         the same request succeeds later, unchanged.
 
-        Two of these strings are also `SeatRequestRefusalReason` members, and
-        that is deliberate — the same meaning deserves the same wire string. The
-        vocabularies stay separate schemas so that neither domain's next reason
-        has to be argued in the other.
+        `route_unavailable` and `service_date_passed` are also
+        `SeatRequestRefusalReason` members, and that is deliberate — the same
+        meaning deserves the same wire string. The vocabularies stay separate
+        schemas so that neither domain's next reason has to be argued in the
+        other.
+
+        `recurring_route_unsupported` no longer means recurring journeys cannot
+        be made: Phase 16b starts, completes and abandons them by date. It means
+        the caller used the route-only form, which names no day, on a plan that
+        has many — so there is nothing to guess from.
+
+        `service_date_passed` bounds **Start only**. Completing or abandoning a
+        journey that already exists has no calendar bound: a journey that ran
+        past midnight is ended the morning after.
 
         There is no `trip_already_started`. It could only have described a route
-        cancellation refused because a journey had begun, and that refusal is
-        unreachable: a one-off route is cancellable only while its departure is
-        upcoming, and a trip can only start once it is past. Repeating Start on a
+        cancellation refused because a journey had begun, and nothing refuses
+        that. Cancelling a **plan** says no future journey of it will run; it
+        does not rewrite a journey already under way, and the driver on that one
+        must still be able to complete or abort it. (A weekday plan is
+        `upcoming` for ever, so cancellation and a running journey genuinely do
+        overlap — for a one-off route they never could.) Repeating Start on a
         running trip is a success, not a refusal.
 
         No reason accompanies an abandoned journey either. `aborted` records that

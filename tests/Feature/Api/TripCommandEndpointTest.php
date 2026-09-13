@@ -409,6 +409,8 @@ final class TripCommandEndpointTest extends TestCase
      */
     private const PROVEN_BY = [
         'recurring_route_unsupported' => 'test_a_weekday_plan_cannot_be_started',
+        'service_date_passed' => DatedTripCommandEndpointTest::class
+            .'::test_a_plans_journey_cannot_be_started_once_its_day_is_over',
         'departure_not_reached' => 'test_a_journey_that_has_not_left_yet_is_refused',
         'route_unavailable' => 'test_a_withdrawn_journey_cannot_be_started',
         'trip_not_started' => 'test_completing_a_journey_nobody_started_is_refused',
@@ -433,10 +435,14 @@ final class TripCommandEndpointTest extends TestCase
             'a trip refusal reason has no endpoint test that produces it',
         );
 
-        foreach (self::PROVEN_BY as $reason => $method) {
+        foreach (self::PROVEN_BY as $reason => $test) {
+            [$class, $method] = str_contains($test, '::')
+                ? explode('::', $test, 2)
+                : [self::class, $test];
+
             self::assertTrue(
-                method_exists($this, $method),
-                "$reason names a test that does not exist: $method",
+                method_exists($class, $method),
+                "$reason names a test that does not exist: $test",
             );
         }
     }

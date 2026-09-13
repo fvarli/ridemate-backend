@@ -22,13 +22,20 @@ use Illuminate\Support\Facades\DB;
  *
  * ELIGIBILITY IS NOT RE-RUN
  *
- * Recurrence, publication state, the departure instant and who accepted a seat
- * are creation concerns, answered when the trip was started. Asking them again
- * here would let a journey that is demonstrably under way become impossible to
- * finish because something about its route changed afterwards — and a driver
- * stuck with a permanently running trip has no way out that is honest.
+ * Publication state, the departure instant and who accepted a seat are creation
+ * concerns, answered when the trip was started. Asking them again here would
+ * let a journey that is demonstrably under way become impossible to finish
+ * because something about its route changed afterwards — and a driver stuck
+ * with a permanently running trip has no way out that is honest.
  *
- * `RouteDeparture::instant()` is deliberately not called.
+ * So a withdrawn route does not block this, and neither does the calendar:
+ * `RouteDeparture::instant()` is not called, and a plan's journey started on
+ * Tuesday is still completable on Wednesday. Start bounds itself to one
+ * calendar day because it CREATES something dated; ending a thing that already
+ * exists has no such day to be inside.
+ *
+ * The one thing that is decided here is WHICH journey — `CommandedJourney`,
+ * shared with Start so the three commands cannot read an address differently.
  *
  * WHAT `completed` DOES NOT MEAN
  *
@@ -44,14 +51,22 @@ final class CompleteTrip
 {
     public function __construct(private readonly OwnedRoute $routes) {}
 
+    /**
+     * @param  ?string  $serviceDate  the day named in the path, or null from the
+     *                                older route-only endpoint
+     */
     public function __invoke(
         Account $driver,
         string $routeId,
+        ?string $serviceDate = null,
         ?CarbonImmutable $now = null,
     ): EndedTrip {
-        return DB::transaction(function () use ($driver, $routeId, $now): EndedTrip {
+        return DB::transaction(function () use ($driver, $routeId, $serviceDate, $now): EndedTrip {
             $route = $this->routes->lock($driver, $routeId);
-            $trip = $this->routes->tripOn($route, $route->departure_date);
+            // Which journey, before anything is read about it. Exact: a trip on
+            // another date of the same plan is a different journey and must not
+            // answer for this one.
+            $trip = $this->routes->tripOn($route, CommandedJourney::dateFor($route, $serviceDate));
 
             if (! $trip instanceof Trip) {
                 throw TripRefused::tripNotStarted();

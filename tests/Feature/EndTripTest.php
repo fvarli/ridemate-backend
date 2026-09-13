@@ -451,7 +451,7 @@ final class EndTripTest extends TestCase
             app(AcceptSeatRequest::class)($driver, $this->requestId());
         }
 
-        app(StartTrip::class)($driver, $route->id, $this->departed());
+        app(StartTrip::class)($driver, $route->id, now: $this->departed());
 
         return [$driver, $route];
     }
@@ -461,7 +461,7 @@ final class EndTripTest extends TestCase
         Route $route,
         ?CarbonImmutable $at = null,
     ): EndedTrip {
-        return app(CompleteTrip::class)($driver, $route->id, $at);
+        return app(CompleteTrip::class)($driver, $route->id, now: $at);
     }
 
     private function abort(
@@ -469,7 +469,7 @@ final class EndTripTest extends TestCase
         Route $route,
         ?CarbonImmutable $at = null,
     ): EndedTrip {
-        return app(AbortTrip::class)($driver, $route->id, $at);
+        return app(AbortTrip::class)($driver, $route->id, now: $at);
     }
 
     private function refusal(callable $command): TripRefused

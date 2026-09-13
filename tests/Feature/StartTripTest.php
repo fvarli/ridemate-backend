@@ -217,7 +217,7 @@ final class StartTripTest extends TestCase
 
         $this->expectException(ModelNotFoundException::class);
 
-        app(StartTrip::class)($stranger, $route->id, $this->departed());
+        app(StartTrip::class)($stranger, $route->id, now: $this->departed());
     }
 
     // --------------------------------------------------------- repeating
@@ -307,8 +307,8 @@ final class StartTripTest extends TestCase
      * would block rather than interleave — so the guarantee is proved
      * structurally, and no fake concurrency harness is built for it.
      *
-     * The `unique (route_id)` constraint from B1 remains as defence; it is not
-     * what this relies on.
+     * The `unique (route_id, service_date)` constraint remains as defence; it
+     * is not what this relies on.
      */
     public function test_the_route_is_locked_before_the_trip_is_read_or_written(): void
     {
@@ -340,6 +340,85 @@ final class StartTripTest extends TestCase
         self::assertLessThan($insert, $routeLock, 'the write happened before the lock');
     }
 
+    /**
+     * CARRIES WEIGHT. The dated command keeps the same order, and the same lock.
+     *
+     * Naming a day changed what is looked up, not how it is serialized: the
+     * route row is still taken first and the exact `(route_id, service_date)`
+     * trip is still read inside that lock, so two devices pressing Start on one
+     * dated journey serialize and the second finds the first's trip.
+     *
+     * The trip read is checked for the service date as well as the route.
+     * A lookup that dropped the date would still read `from "trips"` and would
+     * still pass a test that only asked for that.
+     */
+    public function test_a_dated_start_locks_the_route_before_reading_the_dated_trip(): void
+    {
+        $driver = $this->driver();
+        $route = $this->route($driver, Recurrence::Weekdays);
+        $day = $this->weekdayAhead();
+
+        $statements = $this->statementsDuring(
+            fn () => app(StartTrip::class)(
+                $driver,
+                $route->id,
+                $day->format('Y-m-d'),
+                $day->setTime(9, 0),
+            ),
+        );
+
+        $routeLock = $this->firstMatching(
+            $statements,
+            fn (string $s): bool => str_starts_with($s, 'select * from "routes"')
+                && str_contains($s, 'for update'),
+        );
+        $tripRead = $this->firstMatching(
+            $statements,
+            fn (string $s): bool => str_contains($s, 'from "trips"')
+                && str_contains($s, '"service_date"'),
+        );
+        $insert = $this->firstMatching(
+            $statements,
+            fn (string $s): bool => str_contains($s, 'insert into "trips"'),
+        );
+
+        self::assertNotNull($routeLock, 'the route was read without a lock');
+        self::assertNotNull($tripRead, 'the trip was not looked up by service date');
+        self::assertNotNull($insert, 'no trip was written');
+        self::assertLessThan($tripRead, $routeLock, 'the trip was read before the lock');
+        self::assertLessThan($insert, $routeLock, 'the write happened before the lock');
+    }
+
+    /**
+     * CARRIES WEIGHT. And the dated uniqueness is still there behind it.
+     *
+     * The lock is what decides; the constraint is what survives a lock somebody
+     * removes. Asserted against the live schema rather than the migration, so a
+     * later migration that dropped it fails here.
+     */
+    public function test_one_trip_per_dated_journey_is_still_enforced_by_the_database(): void
+    {
+        $columns = DB::select(
+            "select a.attname as column
+               from pg_index i
+               join pg_class c on c.oid = i.indexrelid
+               join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any(i.indkey)
+              where c.relname = 'trips_one_per_journey' and i.indisunique"
+        );
+
+        $names = [];
+        foreach ($columns as $row) {
+            /** @var array<string, mixed> $fields */
+            $fields = (array) $row;
+            $name = $fields['column'] ?? null;
+            self::assertIsString($name);
+            $names[] = $name;
+        }
+        sort($names);
+
+        self::assertSame(['route_id', 'service_date'], $names);
+    }
+
     /** And nothing here ever locks a seat request, which would invert Phase 13's order. */
     public function test_starting_locks_no_seat_request(): void
     {
@@ -367,7 +446,7 @@ final class StartTripTest extends TestCase
         Route $route,
         ?CarbonImmutable $at = null,
     ): StartedTrip {
-        return app(StartTrip::class)($driver, $route->id, $at);
+        return app(StartTrip::class)($driver, $route->id, now: $at);
     }
 
     private function refusal(
@@ -382,6 +461,26 @@ final class StartTripTest extends TestCase
         }
 
         self::fail('the start was not refused');
+    }
+
+    /**
+     * The next weekday strictly after today, in the pilot's zone.
+     *
+     * The plan runs Monday to Friday, so a fixture that used "tomorrow" would
+     * pass six days a week and fail on the seventh.
+     */
+    private function weekdayAhead(): CarbonImmutable
+    {
+        $timezone = config('ridemate.pilot.timezone');
+        self::assertIsString($timezone);
+
+        $day = CarbonImmutable::now()->setTimezone($timezone)->startOfDay()->addDay();
+
+        while ($day->dayOfWeekIso > 5) {
+            $day = $day->addDay();
+        }
+
+        return $day;
     }
 
     /** An instant comfortably after the fixture route's departure. */
