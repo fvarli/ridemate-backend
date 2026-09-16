@@ -216,10 +216,19 @@ final class DiscoverRoutesEndpointTest extends TestCase
         // since Phase 16b — a plan has days, and each is asked about separately.
         self::assertSame([
             'id', 'origin', 'destination', 'recurrence', 'departure_date',
-            'departure_time', 'timezone', 'departure_state', 'seats_offered',
+            'departure_time', 'timezone', 'departure_state',
+            'requestable_service_dates', 'seats_offered',
             'rules', 'driver', 'my_seat_requests',
         ], array_keys($body['routes'][0]));
         self::assertSame([], $body['routes'][0]['my_seat_requests']);
+
+        // The other new-in-16b field, and the opposite kind: what the ROUTE
+        // offers, identical for every viewer. A weekday plan always has days
+        // inside a fifteen-date window, so an empty list here would mean the
+        // dates were not derived at all.
+        /** @var list<string> $days */
+        $days = $body['routes'][0]['requestable_service_dates'];
+        self::assertNotSame([], $days);
 
         /** @var array<string, mixed> $driver */
         $driver = $body['routes'][0]['driver'];

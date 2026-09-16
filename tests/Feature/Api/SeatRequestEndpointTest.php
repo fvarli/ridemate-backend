@@ -14,6 +14,7 @@ use Illuminate\Foundation\Testing\DatabaseTruncation;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Contract\ValidatesTheContract;
 use Tests\Support\CleansCommittedRows;
 use Tests\Support\CreatesAccounts;
@@ -707,6 +708,264 @@ final class SeatRequestEndpointTest extends TestCase
         $many = $this->queriesFor(fn () => $this->discover($passenger));
 
         self::assertSame($one, $many, 'discovery queries grew with the asked days');
+    }
+
+    // ------------------------------------------- the days the route offers
+
+    /**
+     * WHY THIS FIELD EXISTS AT ALL.
+     *
+     * A client cannot work out which days a plan may be asked about: doing so
+     * means knowing what today is in the route's timezone, when that day's
+     * departure passes and how far the horizon reaches. The alternative to
+     * publishing them is every client shipping an IANA database and a second
+     * copy of these rules.
+     */
+    public function test_a_plan_advertises_the_days_it_can_be_asked_about(): void
+    {
+        $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        /** @var array{routes: list<array<string, mixed>>} $body */
+        $body = $this->discover($passenger)->assertStatus(200)->json();
+
+        /** @var list<string> $days */
+        $days = $body['routes'][0]['requestable_service_dates'];
+
+        self::assertNotSame([], $days);
+        self::assertSame($days, array_values(array_unique($days)));
+
+        $sorted = $days;
+        sort($sorted);
+        self::assertSame($sorted, $days, 'the days were not ascending');
+
+        foreach ($days as $day) {
+            self::assertLessThanOrEqual(
+                5,
+                CarbonImmutable::parse($day)->dayOfWeekIso,
+                "$day is not a weekday",
+            );
+        }
+    }
+
+    public function test_a_one_off_advertises_its_own_single_day(): void
+    {
+        $this->publishedJourney();
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        $this->discover($passenger)
+            ->assertStatus(200)
+            ->assertJsonPath('routes.0.requestable_service_dates', [
+                CarbonImmutable::now()->addDays(3)->format('Y-m-d'),
+            ]);
+    }
+
+    /**
+     * CARRIES WEIGHT. The two lists answer different questions.
+     *
+     * `requestable_service_dates` is what the ROUTE offers; `my_seat_requests`
+     * is what THIS CALLER has spent. A day may legitimately appear in both, and
+     * a future edit that "tidied up" by removing the caller's own days from the
+     * first would destroy the client's ability to tell a departed day from a day
+     * it has already asked about.
+     */
+    public function test_asking_does_not_remove_the_day_the_route_offers(): void
+    {
+        [, $routeId] = $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        /** @var array{routes: list<array<string, mixed>>} $before */
+        $before = $this->discover($passenger)->json();
+
+        $day = $this->weekday(1);
+        $this->ask($passenger, $routeId, 1, $day)->assertStatus(201);
+
+        /** @var array{routes: list<array<string, mixed>>} $after */
+        $after = $this->discover($passenger)->json();
+
+        self::assertSame(
+            $before['routes'][0]['requestable_service_dates'],
+            $after['routes'][0]['requestable_service_dates'],
+            'asking changed the days the route offers',
+        );
+        self::assertContains($day, $after['routes'][0]['requestable_service_dates']);
+        self::assertSame(
+            [$day],
+            array_column($after['routes'][0]['my_seat_requests'], 'service_date'),
+        );
+    }
+
+    /**
+     * CARRIES WEIGHT. A terminal asking does not free its day, and does not
+     * remove it either.
+     *
+     * Declined is the case most likely to be got wrong in both directions: the
+     * day stays offered by the route, because the route's rules have not
+     * changed, AND the caller may never ask about it again, because dated
+     * uniqueness is for life. The client needs both facts, so both are sent.
+     */
+    #[DataProvider('terminalOutcomes')]
+    public function test_a_terminal_asking_leaves_the_routes_day_untouched(
+        string $outcome,
+    ): void {
+        [$driver, $routeId] = $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        $day = $this->weekday(1);
+        $this->ask($passenger, $routeId, 1, $day)->assertStatus(201);
+
+        $path = $outcome === 'declined' ? $this->decline(1) : $this->withdraw(1);
+        $this->postJson($path, [], $outcome === 'declined' ? $driver : $passenger)
+            ->assertStatus(200);
+
+        /** @var array{routes: list<array<string, mixed>>} $body */
+        $body = $this->discover($passenger)->assertStatus(200)->json();
+
+        self::assertContains(
+            $day,
+            $body['routes'][0]['requestable_service_dates'],
+            "a $outcome asking removed the day from the route's own offer",
+        );
+        self::assertSame(
+            [['service_date' => $day, 'id' => $this->id(1), 'status' => $outcome]],
+            $body['routes'][0]['my_seat_requests'],
+        );
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function terminalOutcomes(): iterable
+    {
+        yield 'declined' => ['declined'];
+        yield 'withdrawn' => ['withdrawn'];
+    }
+
+    public function test_another_members_asking_does_not_change_the_advertised_days(): void
+    {
+        [, $routeId] = $this->publishedJourney(recurring: true);
+        $theirs = $this->member('+905322220001', 'Ayşe Demir');
+        $mine = $this->member('+905322220002', 'Zeynep Kaya');
+
+        /** @var array{routes: list<array<string, mixed>>} $before */
+        $before = $this->discover($mine)->json();
+
+        $this->ask($theirs, $routeId, 1, $this->weekday(1))->assertStatus(201);
+
+        /** @var array{routes: list<array<string, mixed>>} $after */
+        $after = $this->discover($mine)->json();
+
+        self::assertSame(
+            $before['routes'][0]['requestable_service_dates'],
+            $after['routes'][0]['requestable_service_dates'],
+        );
+        self::assertSame([], $after['routes'][0]['my_seat_requests']);
+    }
+
+    /**
+     * CARRIES WEIGHT. What is advertised is what the create path accepts.
+     *
+     * The whole point of publishing these days: a member offered one must not
+     * be told `422` on tapping it. Both ends of the window are asked for,
+     * because the far end is where a horizon that counted elapsed hours rather
+     * than calendar days would first disagree.
+     */
+    public function test_every_advertised_day_is_accepted_by_the_create_path(): void
+    {
+        [, $routeId] = $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        /** @var array{routes: list<array<string, mixed>>} $body */
+        $body = $this->discover($passenger)->json();
+
+        /** @var list<string> $days */
+        $days = $body['routes'][0]['requestable_service_dates'];
+
+        $n = 0;
+        foreach ([$this->firstOf($days), $this->lastOf($days)] as $day) {
+            $this->ask($passenger, $routeId, ++$n, $day)
+                ->assertStatus(201)
+                ->assertJsonPath('seat_request.service_date', $day);
+        }
+    }
+
+    /**
+     * CARRIES WEIGHT. And the converse: a day just past the far end is refused.
+     *
+     * Taken from the response rather than computed here, so this reads the same
+     * boundary the client would and cannot drift from it.
+     */
+    public function test_the_day_after_the_advertised_window_is_refused(): void
+    {
+        [, $routeId] = $this->publishedJourney(recurring: true);
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        /** @var array{routes: list<array<string, mixed>>} $body */
+        $body = $this->discover($passenger)->json();
+
+        /** @var list<string> $days */
+        $days = $body['routes'][0]['requestable_service_dates'];
+
+        // The next weekday strictly after the last advertised one. A weekend
+        // day would be refused for not being a service day, which is a
+        // different rule and would not prove the horizon.
+        $beyond = CarbonImmutable::parse($this->lastOf($days));
+        do {
+            $beyond = $beyond->addDay();
+        } while ($beyond->dayOfWeekIso > 5);
+
+        $this->ask($passenger, $routeId, 1, $beyond->format('Y-m-d'))
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'validation_failed');
+    }
+
+    /**
+     * Advertising the days costs nothing per day and nothing per route.
+     *
+     * The dates are decided from columns already in hand. A version that read
+     * the route back for each candidate would multiply this by fifteen, and one
+     * that did it per returned route would grow with the page.
+     */
+    public function test_advertising_the_days_adds_no_query(): void
+    {
+        $driver = $this->member('+905321110000', 'İrem Yılmaz');
+        $passenger = $this->member('+905322220001', 'Ayşe Demir');
+
+        $this->publishedJourney(driver: $driver, n: 1, recurring: true);
+        $single = $this->queriesFor(fn () => $this->discover($passenger, limit: 1));
+
+        foreach ([2, 3, 4] as $n) {
+            $this->publishedJourney(driver: $driver, n: $n, recurring: true);
+        }
+
+        $many = $this->queriesFor(fn () => $this->discover($passenger, limit: 4));
+
+        self::assertSame($single, $many, 'discovery queries grew with the plans returned');
+    }
+
+    /**
+     * The first advertised day, with the emptiness checked rather than assumed.
+     *
+     * @param  list<string>  $days
+     */
+    private function firstOf(array $days): string
+    {
+        self::assertNotSame([], $days, 'the route advertised no days at all');
+
+        return $days[0];
+    }
+
+    /**
+     * The last advertised day — the far edge of the window, which is where a
+     * horizon that drifted would disagree first.
+     *
+     * @param  list<string>  $days
+     */
+    private function lastOf(array $days): string
+    {
+        self::assertNotSame([], $days, 'the route advertised no days at all');
+        $last = end($days);
+        self::assertIsString($last);
+
+        return $last;
     }
 
     // ------------------------------------------------------------- fixtures

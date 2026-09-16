@@ -3431,8 +3431,8 @@ components:
       additionalProperties: false
       required:
         [id, origin, destination, recurrence, departure_date, departure_time,
-         timezone, departure_state, seats_offered, rules, driver,
-         my_seat_requests]
+         timezone, departure_state, requestable_service_dates, seats_offered,
+         rules, driver, my_seat_requests]
       description: |
         A published journey as another member sees it.
 
@@ -3465,6 +3465,41 @@ components:
             - 'Europe/Istanbul'
         departure_state:
           $ref: '#/components/schemas/DepartureState'
+        requestable_service_dates:
+          type: array
+          items:
+            $ref: '#/components/schemas/DepartureDate'
+          description: |
+            **Which of this route's journeys may be asked about right now**,
+            earliest first. Always present, and empty when none may.
+
+            **Server-derived, and deliberately so.** Whether a day is open is
+            read in the route's own timezone — what today is there, whether
+            today's departure has passed, how far ahead the request horizon
+            reaches. A client computing this would need its own IANA database,
+            current only as often as it ships, and a second implementation of
+            rules that live on the server. So the dates are published instead.
+
+            A recurring plan lists its weekdays from the route's today through
+            today + 14 inclusive: at most fifteen candidate dates, of which
+            Saturdays and Sundays are absent, today is absent once its departure
+            has passed, and public holidays are present — this product has no
+            holiday calendar, and whether a driver runs that morning is theirs
+            to say. A one-off route lists its single date while that date is
+            still ahead, and the horizon does not bound it: a journey published
+            for a date two months out is requestable today.
+
+            **Not filtered by who is asking.** A date the caller has already
+            requested stays here; `my_seat_requests` is what says they have spent
+            it. A client that wants the dates it may offer subtracts the second
+            from the first. The two are kept apart because they answer different
+            questions, and a date missing from a merged list would not say
+            whether the journey has left or the member has already asked.
+
+            **Not a promise of a seat.** It says the date rules are satisfied and
+            nothing else. Capacity is not counted, `route_full` is not predicted,
+            and a request for a listed date may still be refused for a reason
+            with no date in it. The request endpoint remains authoritative.
         seats_offered:
           $ref: '#/components/schemas/SeatsOffered'
         rules:
@@ -3491,11 +3526,14 @@ components:
             Nothing may collapse this to a single value: the `service_date` is
             what says which journey a status belongs to.
 
-            **Only journeys that can still be asked about appear.** A recurring
-            plan accumulates askings behind it and nothing deletes them, but a
-            departed day, a day the route does not run, and a day beyond the
-            request horizon are all absent here — so every entry describes a
-            journey the member could still act on. Past askings are read from
+            **Bounded to the days that are still offerable, which is not the
+            same as actionable.** A recurring plan accumulates askings behind it
+            and nothing deletes them, but a departed day, a day the route does
+            not run, and a day beyond the request horizon are all absent here —
+            the days that remain are exactly `requestable_service_dates`. An
+            entry that is present may still be finished: a member gets one asking
+            per journey for its lifetime, so an entry says that day is spent
+            rather than that something is left to do. Past askings are read from
             `GET /api/v1/me/seat-requests`, which is where a member's own history
             lives.
 

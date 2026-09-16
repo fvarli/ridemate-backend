@@ -7,6 +7,7 @@ namespace App\Http\Responses;
 use App\Models\SeatRequest;
 use App\Routes\DiscoveredRoute;
 use App\Routes\DiscoveryPage;
+use App\SeatRequests\RequestableServiceDates;
 use Carbon\CarbonImmutable;
 
 /**
@@ -85,6 +86,30 @@ final class DiscoveryPayload
             'departure_time' => substr($route->departure_time, 0, 5),
             'timezone' => $route->timezone,
             'departure_state' => $route->departureState($now)->value,
+            // WHICH OF THIS PLAN'S DAYS MAY BE ASKED ABOUT, RIGHT NOW.
+            //
+            // Server-derived, because it is route-local temporal truth: what
+            // "today" is where this route runs, when today's departure passes,
+            // and how far ahead the horizon reaches are all read in the route's
+            // own timezone. A client working them out would need an IANA
+            // database shipped in its binary and a second implementation of
+            // rules that live in `RequestableJourney` — so it is answered here,
+            // once, by asking that class about each candidate day.
+            //
+            // NOT FILTERED BY WHO IS ASKING. A day the caller has already asked
+            // about stays in this list; `my_seat_requests` below is what says
+            // they have spent it. Two truths, published separately, because a
+            // client needs both: the days the route offers, and the days this
+            // member has used. Subtracting them here would answer neither.
+            //
+            // NOT A PROMISE OF A SEAT. It says the date rules are satisfied. It
+            // says nothing about capacity, about whose route this is, or about
+            // an asking that already exists — every one of those is refused at
+            // command time, by name, and none of them has a date in it.
+            'requestable_service_dates' => array_map(
+                static fn (CarbonImmutable $day): string => $day->format('Y-m-d'),
+                RequestableServiceDates::of($route, $now),
+            ),
             // Offered, never available. What is left after seat requests is
             // Phase 13's to know, and this number would be a plausible answer
             // to a question nobody has implemented.

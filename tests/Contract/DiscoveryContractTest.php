@@ -66,6 +66,10 @@ final class DiscoveryContractTest extends TestCase
             'departure_time' => '08:25',
             'timezone' => 'Europe/Istanbul',
             'departure_state' => 'upcoming',
+            // Present on every result from Phase 16b. Server-derived and
+            // identical for every viewer: which of this plan's days may be
+            // asked about, not which this caller may still ask about.
+            'requestable_service_dates' => ['2026-09-14', '2026-09-15'],
             'seats_offered' => 3,
             'rules' => [
                 'no_smoking' => true,
@@ -137,6 +141,91 @@ final class DiscoveryContractTest extends TestCase
             ['recurrence' => 'once', 'departure_date' => '2026-09-14'] + $this->discovered(),
             'DiscoveredRoute',
         );
+    }
+
+    public function test_the_offered_days_may_be_empty(): void
+    {
+        $this->assertValidates(
+            ['requestable_service_dates' => []] + $this->discovered(),
+            'DiscoveredRoute',
+        );
+    }
+
+    public function test_an_offered_day_must_be_a_calendar_date(): void
+    {
+        foreach (['14-09-2026', '2026-9-14', '2026-09-14T00:00:00Z', 'tomorrow', ''] as $day) {
+            $this->assertRejects(
+                ['requestable_service_dates' => [$day]] + $this->discovered(),
+                'DiscoveredRoute',
+                "the offered day `$day` was admitted",
+            );
+        }
+    }
+
+    /**
+     * CARRIES WEIGHT. A list of days, never a richer structure.
+     *
+     * The client needs the date and nothing else. A seat count, a "full" flag
+     * or a remaining-capacity number attached to a day would each be a claim
+     * this product cannot make, and an object here is how one gets added
+     * without anybody deciding to.
+     */
+    public function test_an_offered_day_is_a_bare_date_and_not_an_object(): void
+    {
+        foreach ([
+            ['service_date' => '2026-09-14'],
+            ['service_date' => '2026-09-14', 'seats_available' => 2],
+            ['date' => '2026-09-14', 'is_full' => false],
+        ] as $shape) {
+            $this->assertRejects(
+                ['requestable_service_dates' => [$shape]] + $this->discovered(),
+                'DiscoveredRoute',
+                'an offered day was admitted as an object',
+            );
+        }
+    }
+
+    /**
+     * CARRIES WEIGHT. Required, so absence is a contract failure.
+     *
+     * A client that read a missing key as "no days" would silently stop
+     * offering a plan it can still ask about; one that read it as "unknown"
+     * would have nothing to render. Neither is a guess worth allowing.
+     */
+    public function test_the_offered_days_are_required(): void
+    {
+        $without = $this->discovered();
+        unset($without['requestable_service_dates']);
+
+        $this->assertRejects(
+            $without,
+            'DiscoveredRoute',
+            'a result without the offered days was admitted',
+        );
+    }
+
+    /**
+     * CARRIES WEIGHT. The two dated lists are separate fields, and stay so.
+     *
+     * One says which days the route offers, the other which the caller has
+     * spent. A single merged field would answer neither, and the schema is
+     * where that merge would first be attempted.
+     */
+    public function test_the_routes_days_and_the_callers_askings_are_two_fields(): void
+    {
+        /** @var array<string, mixed> $schema */
+        $schema = self::contractDocument()['components']['schemas']['DiscoveredRoute'];
+
+        /** @var array<string, mixed> $properties */
+        $properties = $schema['properties'];
+
+        self::assertArrayHasKey('requestable_service_dates', $properties);
+        self::assertArrayHasKey('my_seat_requests', $properties);
+
+        /** @var list<string> $required */
+        $required = $schema['required'];
+        self::assertContains('requestable_service_dates', $required);
+        self::assertContains('my_seat_requests', $required);
     }
 
     /**

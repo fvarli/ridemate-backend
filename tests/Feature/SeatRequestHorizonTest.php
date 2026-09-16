@@ -94,6 +94,35 @@ final class SeatRequestHorizonTest extends TestCase
         );
     }
 
+    /**
+     * CARRIES WEIGHT. The window is fourteen DAYS, not three hundred and
+     * thirty-six hours.
+     *
+     * Europe/Berlin springs forward on Sunday 29 March 2026, so the fortnight
+     * beginning Monday the 23rd is an hour short of fourteen twenty-four-hour
+     * days. Counted as elapsed time the fifteenth day would measure just inside
+     * the boundary and be admitted — a member offered a day the create path
+     * then refuses, once a year, in a zone the pilot does not run in.
+     *
+     * Istanbul cannot catch this. Türkiye has not observed daylight saving
+     * since 2016, so a fixed +03 and a real zone agree there on every date of
+     * every year, which is exactly why this case is written somewhere else.
+     */
+    public function test_a_daylight_saving_change_does_not_move_the_boundary(): void
+    {
+        $berlin = $this->plan('Europe/Berlin');
+        $now = CarbonImmutable::parse('2026-03-23T09:00:00+01:00');
+
+        self::assertTrue(
+            SeatRequestHorizon::admits($berlin, $this->day('2026-04-06'), $now),
+            'the fourteenth day ahead was closed by the hour the clocks moved',
+        );
+        self::assertFalse(
+            SeatRequestHorizon::admits($berlin, $this->day('2026-04-07'), $now),
+            'the fifteenth day ahead was admitted by counting elapsed time',
+        );
+    }
+
     // --------------------------------------------------------- what it is not
 
     /**
