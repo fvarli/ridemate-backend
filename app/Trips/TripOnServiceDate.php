@@ -29,11 +29,13 @@ use Illuminate\Support\Collection;
  * NULL NO LONGER MEANS TWO THINGS
  *
  * It did: a journey that was never made, and a plan with no single journey to
- * look for, both rendered `not_started`. Phase 16b separated them. The only
- * caller left is `MyRoutePayload`, which now asks this ONLY for a one-off route
- * — so null here means exactly one thing again, a journey nobody started. A
- * plan's `trip` is null on that surface without consulting this at all, and its
- * dated journeys are addressed through `App\Journeys` instead.
+ * look for, both rendered `not_started`. Phase 16b separated them. Every caller
+ * now arrives with a date in hand — `MyRoutePayload` asks only for a one-off
+ * route's own day, `MySeatRequestPayload` for the day the asking is about, and
+ * `App\Reviews\SubmitReview` for the day the seat request names — so null here
+ * means exactly one thing again, a journey nobody started. A plan's `trip` is
+ * null on that surface without consulting this at all, and its dated journeys
+ * are addressed through `App\Journeys` instead.
  */
 final class TripOnServiceDate
 {

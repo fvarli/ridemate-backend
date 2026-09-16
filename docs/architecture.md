@@ -570,9 +570,11 @@ and not the other fails rather than quietly leaving the owner's list behind.
 
 ### What is not in this domain
 
-Phase 14 supports **one-off journeys only**. `route_occurrences` still does not exist, so a
-weekday plan has no per-day trip to make and says so. Nothing infers a lifecycle
-automatically: no scheduler completes a trip, no clock aborts one, and no departure passing
+Phase 14 supported **one-off journeys only**; Phase 16b did not. A weekday plan now has a trip
+per day it runs, addressed by `(route_id, service_date)` — and `route_occurrences` still does
+not exist, because a journey is a VALUE rather than a row. What a plan does not have is a
+lifecycle of its OWN: `MyRoute.trip` is null for every recurring route, which says the question
+belongs to a date rather than to the plan. Nothing infers a lifecycle automatically: no scheduler completes a trip, no clock aborts one, and no departure passing
 starts one. There is no location, GPS, map, navigation, realtime channel, polling endpoint,
 push notification, chat, SOS, attendance, boarding, no-show, review eligibility, rating, trust
 signal or cost anywhere in it.
@@ -725,8 +727,9 @@ a field added to one and not the other fails.
 No aggregate, average, count, distribution, histogram, rank or trust contribution. No public
 profile review query. No text, tags, photos, reply or edit — a review is immutable, so there
 is no update endpoint and no `updated_at` semantics beyond the column. No moderation, report,
-appeal or hide. No notification that a review arrived or was released. No reviews for
-recurring journeys, because only a one-off route can have a trip. No attendance, boarding,
+appeal or hide. No notification that a review arrived or was released. A review still needs a
+COMPLETED trip, and since Phase 16b that trip may belong to any date a plan runs — the review
+resolves it by `(route_id, service_date)` through the seat request's own day, never by route. No attendance, boarding,
 no-show or presence signal anywhere near it, and nothing here is evidence that a journey was
 physically taken.
 
@@ -854,11 +857,12 @@ Still **not created**, each with a reason rather than an oversight:
 * `audit_events` — no ops surface reads them, and the auth tables already carry their own
   timestamps.
 * `jobs`, `failed_jobs` — nothing is queued.
-* `route_occurrences` — still no dated consumer. **Phase 12 revisited this and re-deferred
-  it**: discovery searches plans, so a weekday route stays a plan. Materialising one needs a
-  horizon, and the horizon is a property of whatever reads the rows — a seat request for a
-  specific day, a trip on a specific date. Nothing reads them yet, so any horizon would be
-  invented.
+* `route_occurrences` — **Phase 16b got the dated consumer and still did not build the
+  table.** ADR 0008 deferred it because the horizon is a property of whatever reads the rows,
+  and nothing read them. Seat requests for a specific day and trips on a specific date now do,
+  and `App\SeatRequests\SeatRequestHorizon` is that horizon — but a journey turned out to be a
+  VALUE, `(route_id, service_date)`, not a row. Materialising one would mean writing rows
+  nothing needs an id for, and keeping them in step with the plan they came from.
 * `idempotency_records` — Phase 10's two commands are idempotent by their own shape, so the
   table would have no writer. See *Idempotency* in `docs/api-conventions.md`.
 * `vehicles`, `participants`, `trip_locations`, `conversations`, `messages`,
