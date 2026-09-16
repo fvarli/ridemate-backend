@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Models\OtpChallenge;
+use App\Otp\OtpChannel;
 use App\Otp\OtpService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
@@ -42,14 +43,14 @@ final class OtpServiceTest extends TestCase
 
     public function test_issuing_writes_a_challenge_and_returns_its_passcode(): void
     {
-        $issued = $this->otp->issue(self::PHONE);
+        $issued = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         self::assertTrue(Str::isUuid($issued->id));
-        self::assertSame(self::PHONE, $issued->phoneE164);
+        self::assertSame(self::PHONE, $issued->destination);
         self::assertMatchesRegularExpression('/^\d{6}$/', $issued->code);
 
         $challenge = OtpChallenge::query()->findOrFail($issued->id);
-        self::assertSame(self::PHONE, $challenge->phone_e164);
+        self::assertSame(self::PHONE, $challenge->destination);
         self::assertSame(0, $challenge->attempts);
         self::assertTrue($challenge->isUnresolved());
         self::assertTrue($challenge->expires_at->isFuture());
@@ -59,7 +60,7 @@ final class OtpServiceTest extends TestCase
     {
         config(['ridemate.otp.length' => 4]);
 
-        self::assertMatchesRegularExpression('/^\d{4}$/', $this->otp->issue(self::PHONE)->code);
+        self::assertMatchesRegularExpression('/^\d{4}$/', $this->otp->issue(OtpChannel::Sms, self::PHONE)->code);
     }
 
     /**
@@ -70,7 +71,7 @@ final class OtpServiceTest extends TestCase
      */
     public function test_the_passcode_is_never_stored(): void
     {
-        $issued = $this->otp->issue(self::PHONE);
+        $issued = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         foreach ((array) DB::table('otp_challenges')->first() as $value) {
             if (is_string($value)) {
@@ -91,7 +92,7 @@ final class OtpServiceTest extends TestCase
         DB::flushQueryLog();
         DB::enableQueryLog();
 
-        $this->otp->issue(self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         $queries = DB::getQueryLog();
         DB::disableQueryLog();
@@ -109,10 +110,10 @@ final class OtpServiceTest extends TestCase
 
     public function test_a_new_passcode_invalidates_its_predecessor(): void
     {
-        $first = $this->otp->issue(self::PHONE);
+        $first = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         $this->travel(config('ridemate.otp.resend_cooldown') + 1)->seconds();
-        $second = $this->otp->issue(self::PHONE);
+        $second = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         self::assertNotNull(OtpChallenge::query()->findOrFail($first->id)->invalidated_at);
         self::assertTrue(OtpChallenge::query()->findOrFail($second->id)->isUnresolved());
@@ -129,17 +130,17 @@ final class OtpServiceTest extends TestCase
      */
     public function test_an_expired_but_unpruned_challenge_does_not_block_a_new_one(): void
     {
-        $first = $this->otp->issue(self::PHONE);
+        $first = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         // Well past expiry, and nothing has pruned the row.
         $this->travel(config('ridemate.otp.ttl') + 3600)->seconds();
         self::assertTrue(OtpChallenge::query()->findOrFail($first->id)->isUnresolved());
         self::assertTrue(OtpChallenge::query()->findOrFail($first->id)->expires_at->isPast());
 
-        $second = $this->otp->issue(self::PHONE);
+        $second = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         self::assertNotSame($first->id, $second->id);
-        self::assertTrue($this->otp->verify(self::PHONE, $second->code));
+        self::assertTrue($this->otp->verify(OtpChannel::Sms, self::PHONE, $second->code));
     }
 
     /**
@@ -148,13 +149,13 @@ final class OtpServiceTest extends TestCase
      */
     public function test_the_index_refuses_a_second_unresolved_challenge(): void
     {
-        $this->otp->issue(self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         $this->expectException(QueryException::class);
 
         DB::table('otp_challenges')->insert([
             'id' => Str::uuid7()->toString(),
-            'phone_e164' => self::PHONE,
+            'destination' => self::PHONE,
             'code_hash' => str_repeat('a', 64),
             'expires_at' => CarbonImmutable::now()->addMinutes(5),
             'attempts' => 0,
@@ -166,20 +167,20 @@ final class OtpServiceTest extends TestCase
 
     public function test_a_second_passcode_within_the_cooldown_is_refused(): void
     {
-        $this->otp->issue(self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         $this->expectException(TooManyRequestsHttpException::class);
-        $this->otp->issue(self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE);
     }
 
     public function test_the_cooldown_releases(): void
     {
-        $this->otp->issue(self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE);
         $this->travel(config('ridemate.otp.resend_cooldown') + 1)->seconds();
 
-        $this->otp->issue(self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
-        self::assertSame(2, OtpChallenge::query()->where('phone_e164', self::PHONE)->count());
+        self::assertSame(2, OtpChallenge::query()->where('destination', self::PHONE)->count());
     }
 
     public function test_the_hourly_cap_is_enforced(): void
@@ -188,12 +189,12 @@ final class OtpServiceTest extends TestCase
         $cap = (int) config('ridemate.otp.max_per_phone_per_hour');
 
         for ($i = 0; $i < $cap; $i++) {
-            $this->otp->issue(self::PHONE);
+            $this->otp->issue(OtpChannel::Sms, self::PHONE);
             $this->travel($cooldown + 1)->seconds();
         }
 
         $this->expectException(TooManyRequestsHttpException::class);
-        $this->otp->issue(self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE);
     }
 
     public function test_the_hourly_cap_is_per_number(): void
@@ -202,39 +203,39 @@ final class OtpServiceTest extends TestCase
         $cap = (int) config('ridemate.otp.max_per_phone_per_hour');
 
         for ($i = 0; $i < $cap; $i++) {
-            $this->otp->issue(self::PHONE);
+            $this->otp->issue(OtpChannel::Sms, self::PHONE);
             $this->travel($cooldown + 1)->seconds();
         }
 
         // A different member must be unaffected by this one's history.
-        $this->otp->issue(self::OTHER);
+        $this->otp->issue(OtpChannel::Sms, self::OTHER);
 
-        self::assertSame(1, OtpChallenge::query()->where('phone_e164', self::OTHER)->count());
+        self::assertSame(1, OtpChallenge::query()->where('destination', self::OTHER)->count());
     }
 
     // ---------------------------------------------------------- verification
 
     public function test_the_right_passcode_verifies_and_is_consumed(): void
     {
-        $issued = $this->otp->issue(self::PHONE);
+        $issued = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
-        self::assertTrue($this->otp->verify(self::PHONE, $issued->code));
+        self::assertTrue($this->otp->verify(OtpChannel::Sms, self::PHONE, $issued->code));
         self::assertNotNull(OtpChallenge::query()->findOrFail($issued->id)->consumed_at);
     }
 
     public function test_a_passcode_works_exactly_once(): void
     {
-        $issued = $this->otp->issue(self::PHONE);
+        $issued = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
-        self::assertTrue($this->otp->verify(self::PHONE, $issued->code));
-        self::assertFalse($this->otp->verify(self::PHONE, $issued->code));
+        self::assertTrue($this->otp->verify(OtpChannel::Sms, self::PHONE, $issued->code));
+        self::assertFalse($this->otp->verify(OtpChannel::Sms, self::PHONE, $issued->code));
     }
 
     public function test_a_wrong_passcode_fails_and_costs_an_attempt(): void
     {
-        $issued = $this->otp->issue(self::PHONE);
+        $issued = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
-        self::assertFalse($this->otp->verify(self::PHONE, $this->wrongCodeFor($issued->code)));
+        self::assertFalse($this->otp->verify(OtpChannel::Sms, self::PHONE, $this->wrongCodeFor($issued->code)));
         self::assertSame(1, OtpChallenge::query()->findOrFail($issued->id)->attempts);
     }
 
@@ -247,43 +248,43 @@ final class OtpServiceTest extends TestCase
     public function test_the_attempt_cap_is_exact(): void
     {
         $max = (int) config('ridemate.otp.max_attempts');
-        $issued = $this->otp->issue(self::PHONE);
+        $issued = $this->otp->issue(OtpChannel::Sms, self::PHONE);
         $wrong = $this->wrongCodeFor($issued->code);
 
         for ($i = 0; $i < $max; $i++) {
-            self::assertFalse($this->otp->verify(self::PHONE, $wrong), "attempt $i");
+            self::assertFalse($this->otp->verify(OtpChannel::Sms, self::PHONE, $wrong), "attempt $i");
         }
 
         self::assertSame($max, OtpChallenge::query()->findOrFail($issued->id)->attempts);
 
         // Exhausted: even the correct passcode is refused, and the counter
         // stops rather than climbing forever.
-        self::assertFalse($this->otp->verify(self::PHONE, $issued->code));
+        self::assertFalse($this->otp->verify(OtpChannel::Sms, self::PHONE, $issued->code));
         self::assertSame($max, OtpChallenge::query()->findOrFail($issued->id)->attempts);
     }
 
     public function test_an_expired_passcode_does_not_verify(): void
     {
-        $issued = $this->otp->issue(self::PHONE);
+        $issued = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         $this->travel(config('ridemate.otp.ttl') + 1)->seconds();
 
-        self::assertFalse($this->otp->verify(self::PHONE, $issued->code));
+        self::assertFalse($this->otp->verify(OtpChannel::Sms, self::PHONE, $issued->code));
     }
 
     public function test_an_invalidated_passcode_does_not_verify(): void
     {
-        $first = $this->otp->issue(self::PHONE);
+        $first = $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
         $this->travel(config('ridemate.otp.resend_cooldown') + 1)->seconds();
-        $this->otp->issue(self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE);
 
-        self::assertFalse($this->otp->verify(self::PHONE, $first->code));
+        self::assertFalse($this->otp->verify(OtpChannel::Sms, self::PHONE, $first->code));
     }
 
     public function test_verifying_a_number_with_no_challenge_fails(): void
     {
-        self::assertFalse($this->otp->verify(self::PHONE, '123456'));
+        self::assertFalse($this->otp->verify(OtpChannel::Sms, self::PHONE, '123456'));
     }
 
     /**
@@ -295,11 +296,11 @@ final class OtpServiceTest extends TestCase
      */
     public function test_a_passcode_issued_to_one_number_does_not_verify_for_another(): void
     {
-        $mine = $this->otp->issue(self::PHONE);
-        $theirs = $this->otp->issue(self::OTHER);
+        $mine = $this->otp->issue(OtpChannel::Sms, self::PHONE);
+        $theirs = $this->otp->issue(OtpChannel::Sms, self::OTHER);
 
-        self::assertFalse($this->otp->verify(self::OTHER, $mine->code));
-        self::assertTrue($this->otp->verify(self::OTHER, $theirs->code));
+        self::assertFalse($this->otp->verify(OtpChannel::Sms, self::OTHER, $mine->code));
+        self::assertTrue($this->otp->verify(OtpChannel::Sms, self::OTHER, $theirs->code));
     }
 
     private function wrongCodeFor(string $code): string

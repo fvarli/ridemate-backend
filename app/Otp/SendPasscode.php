@@ -57,10 +57,13 @@ final class SendPasscode
             );
         }
 
-        $challenge = $this->otp->issue($phoneE164);
+        // Named explicitly rather than defaulted: this action delivers by SMS,
+        // and the day a sibling delivers by email the two must be told apart by
+        // what they say, not by which one was written first.
+        $challenge = $this->otp->issue(OtpChannel::Sms, $phoneE164);
 
         try {
-            $this->sms->sendPasscode($challenge->phoneE164, $challenge->code);
+            $this->sms->sendPasscode($challenge->destination, $challenge->code);
         } catch (SmsDeliveryFailed $e) {
             // The challenge id and nothing else. Not the passcode, which would
             // put a credential in the log; not the number, which is the

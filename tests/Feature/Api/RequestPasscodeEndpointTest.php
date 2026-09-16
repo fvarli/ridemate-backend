@@ -90,7 +90,7 @@ final class RequestPasscodeEndpointTest extends TestCase
     {
         $this->postJson(self::PATH, ['phone' => '0532 123 45 67'])->assertStatus(202);
 
-        self::assertSame(self::KNOWN, OtpChallenge::query()->firstOrFail()->phone_e164);
+        self::assertSame(self::KNOWN, OtpChallenge::query()->firstOrFail()->destination);
         self::assertSame(self::KNOWN, $this->sms->sent()[0]['phone']);
     }
 

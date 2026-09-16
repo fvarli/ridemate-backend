@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Otp\OtpChannel;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
@@ -14,8 +15,14 @@ use Illuminate\Database\Eloquent\Model;
  * The plaintext code is NOT on this model and never will be. It exists in a
  * local variable during issuance, travels to the sender, and is gone.
  *
+ * `destination` is read through `channel`: an E.164 number for `Sms`, and an
+ * email address for `Email`. It was called `phone_e164` while there was only
+ * one kind, and the rename is what stops the next channel being stored in a
+ * column that says it is something else.
+ *
  * @property string $id
- * @property string $phone_e164
+ * @property OtpChannel $channel
+ * @property string $destination
  * @property string $code_hash
  * @property CarbonImmutable $expires_at
  * @property int $attempts
@@ -58,6 +65,7 @@ class OtpChallenge extends Model
     protected function casts(): array
     {
         return [
+            'channel' => OtpChannel::class,
             'expires_at' => 'immutable_datetime',
             'attempts' => 'integer',
             'consumed_at' => 'immutable_datetime',
