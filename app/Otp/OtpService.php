@@ -97,41 +97,87 @@ final class OtpService
      * Consumes the challenge on success and counts the attempt on failure.
      * Every failure — no challenge, expired, exhausted, wrong — returns the
      * same false, because the caller must not be able to tell them apart.
+     *
+     * Owns its transaction, which is what a caller with nothing else to record
+     * wants: the phone sign-in path verifies and then decides who that makes
+     * you, and those are two decisions rather than one write.
      */
     public function verify(OtpChannel $channel, string $destination, string $code): bool
     {
-        return DB::transaction(function () use ($channel, $destination, $code): bool {
-            // The row lock is what makes the attempt cap exact. Without it,
-            // parallel guesses read the same counter and each writes back
-            // "one more", so five concurrent requests spend one attempt.
-            $challenge = OtpChallenge::query()
-                ->where('channel', $channel)
-                ->where('destination', $destination)
-                ->whereNull('consumed_at')
-                ->whereNull('invalidated_at')
-                ->lockForUpdate()
-                ->first();
+        return DB::transaction(fn (): bool => $this->attempt($channel, $destination, $code));
+    }
 
-            if (! $challenge instanceof OtpChallenge) {
-                return false;
-            }
+    /**
+     * The same verification, for a caller that owns the transaction.
+     *
+     * WHY THIS EXISTS, AND WHY IT IS NOT A SECOND IMPLEMENTATION
+     *
+     * A caller that records what a successful verification MEANS has to commit
+     * that meaning and the consumption together. Registration is the first:
+     * consuming a challenge without writing the proof it earned spends a code
+     * that can never be verified again and strands the member on a
+     * registration that can never complete — and the reverse, proof without
+     * consumption, is a code that can be spent twice.
+     *
+     * Calling `verify()` from inside another transaction would have worked, by
+     * way of Laravel turning the inner `DB::transaction` into a savepoint. It
+     * is the same guarantee reached by accident, and a reader would have to
+     * know that to see it. This says it instead, and the guard below makes a
+     * caller that forgot fail loudly rather than commit half the story.
+     *
+     * Both paths run the one `attempt()` below, so there is no second copy of
+     * the attempt ceiling, the constant-time comparison or the consumption.
+     *
+     * LOCK ORDER. This takes the challenge row. Any caller that also locks a
+     * registration row must take THAT one first — see
+     * `App\Registration\VerifyRegistrationPasscode`.
+     */
+    public function verifyWithin(OtpChannel $channel, string $destination, string $code): bool
+    {
+        if (DB::transactionLevel() === 0) {
+            throw new RuntimeException(
+                'Passcode verification within a caller transaction requires one to be open.',
+            );
+        }
 
-            if (! $challenge->isUsable($this->setting('max_attempts'))) {
-                return false;
-            }
+        return $this->attempt($channel, $destination, $code);
+    }
 
-            if (! hash_equals($challenge->code_hash, $this->hash($destination, $code))) {
-                $challenge->attempts++;
-                $challenge->save();
+    /**
+     * The verification itself. Assumes a transaction is already open.
+     */
+    private function attempt(OtpChannel $channel, string $destination, string $code): bool
+    {
+        // The row lock is what makes the attempt cap exact. Without it,
+        // parallel guesses read the same counter and each writes back
+        // "one more", so five concurrent requests spend one attempt.
+        $challenge = OtpChallenge::query()
+            ->where('channel', $channel)
+            ->where('destination', $destination)
+            ->whereNull('consumed_at')
+            ->whereNull('invalidated_at')
+            ->lockForUpdate()
+            ->first();
 
-                return false;
-            }
+        if (! $challenge instanceof OtpChallenge) {
+            return false;
+        }
 
-            $challenge->consumed_at = CarbonImmutable::now();
+        if (! $challenge->isUsable($this->setting('max_attempts'))) {
+            return false;
+        }
+
+        if (! hash_equals($challenge->code_hash, $this->hash($destination, $code))) {
+            $challenge->attempts++;
             $challenge->save();
 
-            return true;
-        });
+            return false;
+        }
+
+        $challenge->consumed_at = CarbonImmutable::now();
+        $challenge->save();
+
+        return true;
     }
 
     /**

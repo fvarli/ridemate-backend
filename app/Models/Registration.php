@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Otp\OtpChannel;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
@@ -68,6 +69,57 @@ class Registration extends Model
     public function isFullyProven(): bool
     {
         return $this->email_verified_at !== null && $this->phone_verified_at !== null;
+    }
+
+    /**
+     * The destination this registration will prove on a channel, if one is
+     * bound yet.
+     *
+     * The ONLY source of a destination for verification. A caller that could
+     * supply one would be able to verify a code sent to an address it owns and
+     * attach the proof to a registration naming somebody else's — which is the
+     * single thing the pre-account boundary exists to prevent. The channel is
+     * the discriminator here for the same reason it is on `otp_challenges`:
+     * one column per kind, read through the value that says which kind.
+     */
+    public function destinationOn(OtpChannel $channel): ?string
+    {
+        return match ($channel) {
+            OtpChannel::Sms => $this->phone_e164,
+            OtpChannel::Email => $this->email,
+        };
+    }
+
+    /** Whether possession of this channel's destination has already been proven. */
+    public function provenOn(OtpChannel $channel): bool
+    {
+        return $this->verifiedAtOn($channel) !== null;
+    }
+
+    public function verifiedAtOn(OtpChannel $channel): ?CarbonImmutable
+    {
+        return match ($channel) {
+            OtpChannel::Sms => $this->phone_verified_at,
+            OtpChannel::Email => $this->email_verified_at,
+        };
+    }
+
+    /** The column a proof on this channel is written to. */
+    public function proofColumnOn(OtpChannel $channel): string
+    {
+        return match ($channel) {
+            OtpChannel::Sms => 'phone_verified_at',
+            OtpChannel::Email => 'email_verified_at',
+        };
+    }
+
+    /** The column this channel's destination is bound to. */
+    public function destinationColumnOn(OtpChannel $channel): string
+    {
+        return match ($channel) {
+            OtpChannel::Sms => 'phone_e164',
+            OtpChannel::Email => 'email',
+        };
     }
 
     /**

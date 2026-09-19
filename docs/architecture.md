@@ -312,16 +312,53 @@ member signs in through the normal flow — the same answer Phase 9 gives for a 
 response, and for the same reason: a credential that can mint sessions after it has served
 its purpose is an unlimited session factory held by whoever kept a copy.
 
-**What exists after this slice, and what does not.** The aggregate and the credential exist
-as an internal capability: minting, resolving, and binding a canonical destination through
-the same `EmailAddress` and `PhoneNumber` every other writer uses. **Nothing else.** No
-passcode is issued from a registration and no proof is attached — that has to consume an OTP
-challenge and record the proof in **one transaction**, locking **registration before
-challenge**, or a crash between the two spends a challenge that can never be verified again
-and strands the member on a registration that can never complete. No account is created or
-modified, no token is issued, no route resolves any of it, and `openapi.yaml` describes no
-registration operation. **Mature registration is not operational**, and it could not be even
-if the rest existed: neither channel has a production provider.
+#### Registration proof: one transaction, and one lock order
+
+`SendRegistrationPasscode` binds a destination to a registration and then sends a passcode to
+it; `VerifyRegistrationPasscode` takes a registration, a channel and a code, and writes the
+proof. Both are internal — no route resolves either.
+
+**Verification takes no destination, and that is the whole security property.** It reads the
+destination from the locked registration row, so attaching a code earned on an address you
+control to a registration naming somebody else's is not something a check has to catch: there
+is nowhere to put the wrong value. **Binding is write-once per channel** and happens only as
+part of sending, so a registration cannot come to name an address it never requested a code
+at — issuance invalidates every unresolved challenge for that destination, so a second
+registration reaches one only by superseding whatever the first held. The accepted residual:
+two registrations naming one destination share its single live challenge and the last send
+wins it, because `otp_challenges` carries no registration column and the OTP layer never
+learns what a code is for. It is not a way in — the code still goes to the destination.
+
+**Consumption and proof commit together.** A consumed challenge with no proof is a code that
+can never be verified again on a registration that can therefore never complete; proof
+without consumption is a code that can be spent twice. So the registration layer owns the
+transaction and calls `OtpService::verifyWithin()`, the sibling of `verify()` that requires
+one to be open. Both run the same private `attempt()`, so the attempt ceiling, the
+constant-time comparison and the consumption exist once. Calling `verify()` from inside
+another transaction would have worked by way of Laravel turning it into a savepoint — the
+same guarantee reached by accident, invisible to a reader.
+
+**Lock order is `registrations` → `otp_challenges`, and it is mandatory.** The registration
+row is taken first; `verifyWithin()` then takes the challenge row. There is no inverse path,
+and `otp_challenges` carries no registration column precisely so that none can exist. A test
+holds the registration row on a second connection and asserts the verification blocks **and**
+that the challenge is untouched while it does.
+
+**Proof is write-once.** A channel already proven is refused before any challenge is read, so
+a second verification cannot move the timestamp and a resend cannot erase or refresh it —
+this is the only writer, and it declines. Every refusal is the same `false`: no challenge,
+expired, exhausted, wrong code, unbound channel, already proven, registration ended.
+
+Existing OTP behaviour is untouched — hashing, expiry, the attempt ceiling, single
+consumption, invalidation, cooldown, per-`(channel, destination)` budgets, channel isolation
+— and `/api/v1/auth/*` is byte-for-byte what it was.
+
+**What exists after this slice, and what does not.** The aggregate, the credential, and
+registration-scoped issue and verify on both channels, all internal. **Nothing else.** No
+account is created or modified, no token is issued, no `completed_at` is ever written, no
+route resolves any of it, and `openapi.yaml` describes no registration operation. Completion
+is its own slice. **Mature registration is not operational**, and it could not be even if the
+rest existed: neither channel has a production provider.
 
 **Registration retention policy: `LEGAL REVIEW REQUIRED`.** An abandoned registration holds
 an email address and a phone number, and the table has no sweep. Indefinite retention is

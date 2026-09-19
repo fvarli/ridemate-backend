@@ -42,6 +42,8 @@ trait CleansCommittedRows
         // One statement, CASCADE for the foreign keys. spatial_ref_sys and
         // migrations are never named: emptying the first leaves PostGIS
         // registered and broken.
-        DB::statement('truncate table auth_tokens, auth_sessions, accounts, otp_challenges cascade');
+        DB::statement(
+            'truncate table auth_tokens, auth_sessions, accounts, otp_challenges, registrations cascade'
+        );
     }
 }
