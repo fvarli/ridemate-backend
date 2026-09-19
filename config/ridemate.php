@@ -126,6 +126,34 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Email delivery
+    |--------------------------------------------------------------------------
+    |
+    | `null` is the only supported value, and it throws. RideMate has selected
+    | no email provider, and this seam exists so that selecting one later is a
+    | configuration change rather than a redesign in the middle of an
+    | authentication flow.
+    |
+    | Nothing issues an email passcode today. A configured sender does not make
+    | Email OTP reachable: there is no email endpoint and no email on an
+    | account. This key configures delivery, not a feature.
+    |
+    | Laravel's `config/mail.php` is framework skeleton this application never
+    | reads. It is not RideMate email delivery, and this driver is deliberately
+    | not a wrapper around it — `MAIL_MAILER` defaults to the log, which is the
+    | last place a passcode may go.
+    |
+    | There is no `local_echo` counterpart. Nothing issues an email passcode,
+    | so there is no local workflow for one to serve.
+    |
+    */
+
+    'email' => [
+        'driver' => env('RIDEMATE_EMAIL_DRIVER', 'null'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Phone numbers
     |--------------------------------------------------------------------------
     |

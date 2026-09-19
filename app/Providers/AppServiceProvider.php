@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Otp\Email\EmailSender;
+use App\Otp\Email\NullEmailSender;
 use App\Otp\Sms\LocalEchoSmsSender;
 use App\Otp\Sms\NullSmsSender;
 use App\Otp\Sms\SmsSender;
@@ -41,6 +43,29 @@ class AppServiceProvider extends ServiceProvider
                 // would hide it until a member complained.
                 default => throw new InvalidArgumentException(
                     'Unknown SMS driver. Set RIDEMATE_SMS_DRIVER to a supported value.',
+                ),
+            };
+        });
+
+        // Resolvable, and that is all. Nothing injects an EmailSender: no code
+        // path issues a passcode on OtpChannel::Email, so a binding here does
+        // not make Email OTP reachable — it makes the seam real.
+        $this->app->singleton(EmailSender::class, function (): EmailSender {
+            $driver = config('ridemate.email.driver');
+
+            return match ($driver) {
+                // The default, and it throws. RideMate has no email provider,
+                // and the alternative — quietly discarding, or handing the
+                // passcode to Laravel's stock mailer, which logs it — is worse
+                // than refusing. See NullEmailSender.
+                'null' => new NullEmailSender,
+
+                // Same rule as SMS: an unrecognised driver is a configuration
+                // mistake, and substituting the refusing sender would turn a
+                // typo into a silent downgrade nobody notices until a provider
+                // is configured and still nothing arrives.
+                default => throw new InvalidArgumentException(
+                    'Unknown email driver. Set RIDEMATE_EMAIL_DRIVER to a supported value.',
                 ),
             };
         });

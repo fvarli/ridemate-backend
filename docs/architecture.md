@@ -209,6 +209,15 @@ than accumulating, and recording only the last four digits of the number.
 
 **Production sign-in is not operational until an SMS adapter is configured.**
 
+An **email delivery seam** exists beside it — `App\Otp\Email\EmailSender`, one method, no
+provider concepts — with the same refusing default and the same rule that an unrecognised
+driver is a configuration error rather than a silent downgrade. No provider has been
+selected, nothing is sent, and there is deliberately no `local_echo` counterpart because no
+workflow needs one. **Nothing calls it**: no code path issues a challenge on
+`OtpChannel::Email`, no route exposes one, and an account still has no email address, so a
+bound sender makes the seam real without making Email OTP reachable. Laravel's `config/mail.php`
+is framework skeleton this application never reads and is not RideMate email delivery.
+
 ### Rate limiting
 
 Per-IP budgets use Laravel's `throttle` middleware on the **database** cache store. Not the
