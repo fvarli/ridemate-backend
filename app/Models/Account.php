@@ -14,6 +14,18 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 /**
  * A credential identity: a verified phone number, and whether it may sign in.
  *
+ * ON THE EMAIL COLUMNS, WHICH NOTHING WRITES
+ *
+ * `email` and `email_verified_at` are capability rather than behaviour. A
+ * mature registration will eventually prove both an address and a number and
+ * produce an account carrying each; these are where that address will land. No
+ * code puts one there today, nothing resolves an account by address, and both
+ * are NULL on every existing row — which is the truth about those members
+ * rather than a gap in them. They travel together in both directions, enforced
+ * by a database CHECK: an account never holds an address it has not proven.
+ * "Bound but not yet verified" is a real state, and it belongs to
+ * `registrations`, not here.
+ *
  * ON HasUuids
  *
  * Laravel's HasUuids IS the UUIDv7 trait — its newUniqueId() returns
@@ -24,6 +36,8 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property string $id
  * @property string $phone_e164
  * @property CarbonImmutable $phone_verified_at
+ * @property string|null $email
+ * @property CarbonImmutable|null $email_verified_at
  * @property AccountStatus $status
  * @property CarbonImmutable $created_at
  * @property CarbonImmutable $updated_at
@@ -41,7 +55,9 @@ class Account extends Model
      * not something a request payload may set. `phone_e164` is absent for the
      * same reason in reverse — it is written once, by the passcode flow, from a
      * normalized value, and a mass-assignable phone number is an account
-     * takeover waiting for a careless controller.
+     * takeover waiting for a careless controller. `email` and
+     * `email_verified_at` are absent for that reason squared: a fillable
+     * verification timestamp is a way to claim an address without proving it.
      *
      * @var list<string>
      */
@@ -82,6 +98,7 @@ class Account extends Model
     {
         return [
             'phone_verified_at' => 'immutable_datetime',
+            'email_verified_at' => 'immutable_datetime',
             'status' => AccountStatus::class,
         ];
     }

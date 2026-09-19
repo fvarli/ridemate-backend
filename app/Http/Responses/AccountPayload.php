@@ -27,9 +27,16 @@ use App\Models\Account;
  *
  * `updated_at` — an infrastructure timestamp, not a fact about the member.
  * Session, token, generation and device fields — the server's bookkeeping, and
- * a map of the credential chain if published. Profile, display name, email,
- * verification state, Trust Score, roles — none of which exist, and a contract
- * describing them would be describing an intention.
+ * a map of the credential chain if published. Profile, display name, Trust
+ * Score, roles — none of which exist, and a contract describing them would be
+ * describing an intention.
+ *
+ * `email` and `email_verified_at` are absent for a different reason, and it is
+ * the reason this class names its fields one by one. They DO exist now, as
+ * columns nothing writes. A response that grew them the day the migration
+ * landed would publish a field that is NULL for every member alive, and would
+ * do it without anybody deciding to. They appear here when a slice decides they
+ * should, and the contract is amended in the same breath.
  *
  * `phone_e164` is here because this is the one response where it belongs: the
  * owner's own account. It never appears in any payload another member can see.

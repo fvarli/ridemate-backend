@@ -97,8 +97,8 @@ request and is stored against nothing; the `X-Request-Id` header keeps the two a
 
 Phone-first, passwordless, and built in Phase 9. What follows is what the code does.
 
-**Phone (E.164) is the identity.** `accounts.phone_e164` stores the canonical form and
-nothing else: `0532…`, `+90532…` and `905321234567` are one person, and storing what was
+**Phone (E.164) is the identity**, and still the only one anything authenticates by.
+`accounts.phone_e164` stores the canonical form and nothing else: `0532…`, `+90532…` and `905321234567` are one person, and storing what was
 typed would give them three accounts, three trust histories and no way to merge them.
 Normalization happens once, at the request boundary, through
 `giggsey/libphonenumber-for-php-lite` — not a `+90` regular expression, which accepts
@@ -390,6 +390,41 @@ an email address and a phone number, and the table has no sweep. Indefinite rete
 own half-hour lifetime (`ridemate.registration.ttl`) bounds how long a row is *usable*, not
 how long it is *kept*, and the two must not be confused. The cleanup that would enforce a
 retention period is deferred until the period is decided rather than invented here.
+
+#### An account can hold a proven email address, and nothing puts one there
+
+`accounts.email` and `accounts.email_verified_at` are nullable, and both are NULL on every
+row that exists. That NULL is the truth about those members — they have not proven an address
+— rather than a gap in them. **Adding a column is not adding a feature**: nothing writes
+either one, no lookup resolves an account by address, `AuthenticateByPhone` and
+`POST /auth/otp/verify` are untouched, and `AccountPayload` still names its five fields one
+by one, which is precisely why a migration cannot publish something nobody decided to publish.
+
+`phone_e164` and `phone_verified_at` stay NOT NULL. That is true of every existing row and of
+every mature registration to come; relaxing it is what a transitional email-only account would
+need, and that is a rollout decision nobody has made. There is no backfill, because there is
+nothing honest to fill with — an `email_verified_at` invented for a member who verified
+nothing would be the one thing a verification timestamp must never be. There is no
+`registration_complete` flag either, and there must not be: it would mark every member who
+signed up before the second channel existed as defective.
+
+**The CHECK is two-way here and one-way on `registrations`.** A registration binds a
+destination before proving it, because that is what the passcode is sent to, so there a
+timestamp implies its identifier and not the reverse. An account has no in-between state: it
+never holds an address it has not proven, so the pair travels together in both directions.
+
+Uniqueness is a partial index on `email where email is not null`. PostgreSQL would already
+permit many NULLs under a plain unique index; the predicate is written anyway, because it says
+the rule is about addresses rather than rows and keeps the index off every legacy account.
+Case-insensitive identity falls out of the **stored** form — `App\Support\EmailAddress`
+lowercases the whole address — rather than out of a functional index, which keeps one
+definition of "the same address" in the application and none in the schema. No dot removal, no
+`+tag` stripping, no DNS.
+
+**What this does not make operational.** Registration completion, account creation from a
+registration, email login, login-factor choice, an upgrade path for existing phone-only
+members, an email-change flow, dual-verification enforcement — none of them exist. Mature
+dual-verified registration is **not** operational.
 
 ### Rate limiting
 
