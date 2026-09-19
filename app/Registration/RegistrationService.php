@@ -21,8 +21,9 @@ use RuntimeException;
  * It never touches `accounts`, never opens a session and never issues a token.
  * There is no code path from here to `TokenService`, and the credential it
  * mints is refused by every authenticated route by construction. A registration
- * is a place to accumulate proof; what proof eventually entitles anyone to is
- * the completion slice's question, and it does not exist yet.
+ * is a place to accumulate proof; turning two proofs into an account is
+ * `CompleteRegistration`, which owns that transaction and is equally
+ * unreachable from outside.
  *
  * It also issues no passcode and verifies none. Those are
  * `SendRegistrationPasscode` and `VerifyRegistrationPasscode`, which sit beside
@@ -76,6 +77,11 @@ final class RegistrationService
      * three requests at least — and it is deliberately NOT the refresh-token
      * rule: re-presenting this one is not reuse, and must never revoke
      * anything.
+     *
+     * It stops the moment completion commits, and that is the boundary that
+     * matters: `isAdvanceable()` is false once `completed_at` is set, so a
+     * credential whose registration produced an account cannot be presented
+     * for a second one.
      */
     public function resolve(string $credential): ?Registration
     {

@@ -17,8 +17,9 @@ use Illuminate\Database\Eloquent\Model;
  * `credential_hash` reaches the database.
  *
  * Nothing here decides anything. Whether a registration may still be advanced
- * is `isAdvanceable()`, and whether it may produce an account is a question no
- * code answers yet: completion does not exist.
+ * is `isAdvanceable()`, and whether it has earned an account is
+ * `isFullyProven()`. What is done about either answer belongs to
+ * `App\Registration\CompleteRegistration`, which owns the transaction.
  *
  * @property string $id
  * @property string $credential_hash
@@ -62,9 +63,10 @@ class Registration extends Model
     /**
      * Whether both possessions have been proven for THIS registration.
      *
-     * The mature account-creation invariant in one place, so that the slice
-     * which eventually creates an account reads it rather than restating it.
-     * Nothing calls this yet: completion is not implemented.
+     * The mature account-creation invariant in one place, so that the action
+     * which creates the account reads it rather than restating it. It says
+     * nothing about whether the registration may still be advanced, which is
+     * the separate question `isAdvanceable()` answers — completion needs both.
      */
     public function isFullyProven(): bool
     {

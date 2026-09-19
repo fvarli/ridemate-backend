@@ -62,8 +62,9 @@ use Illuminate\Support\Facades\DB;
  * NOT REACHABLE FROM OUTSIDE
  *
  * No route resolves this and no controller calls it. A successful verification
- * still creates no account, opens no session and issues no token: what two
- * proofs entitle anyone to is the completion slice's question.
+ * still creates no account, opens no session and issues no token: acting on two
+ * proofs is `CompleteRegistration`, which is a separate transaction and equally
+ * unreachable from outside.
  */
 final class VerifyRegistrationPasscode
 {

@@ -377,12 +377,13 @@ Existing OTP behaviour is untouched — hashing, expiry, the attempt ceiling, si
 consumption, invalidation, cooldown, per-`(channel, destination)` budgets, channel isolation
 — and `/api/v1/auth/*` is byte-for-byte what it was.
 
-**What exists after this slice, and what does not.** The aggregate, the credential, and
-scope-isolated issue and verify on both channels, all internal. **Nothing else.** No
-account is created or modified, no token is issued, no `completed_at` is ever written, no
-route resolves any of it, and `openapi.yaml` describes no registration operation. Completion
-is its own slice. **Mature registration is not operational**, and it could not be even if the
-rest existed: neither channel has a production provider.
+**What the proof slice itself does, and does not.** The aggregate, the credential, and
+scope-isolated issue and verify on both channels, all internal. **Nothing else.** Neither
+`SendRegistrationPasscode` nor `VerifyRegistrationPasscode` creates or modifies an account,
+issues a token or writes `completed_at` — acting on two proofs is `CompleteRegistration`,
+below, and it is a separate transaction. No route resolves any of it, and `openapi.yaml`
+describes no registration operation. **Mature registration is not operational**, and it could
+not be even if the rest existed: neither channel has a production provider.
 
 **Registration retention policy: `LEGAL REVIEW REQUIRED`.** An abandoned registration holds
 an email address and a phone number, and the table has no sweep. Indefinite retention is
@@ -421,10 +422,83 @@ lowercases the whole address — rather than out of a functional index, which ke
 definition of "the same address" in the application and none in the schema. No dot removal, no
 `+tag` stripping, no DNS.
 
-**What this does not make operational.** Registration completion, account creation from a
-registration, email login, login-factor choice, an upgrade path for existing phone-only
-members, an email-change flow, dual-verification enforcement — none of them exist. Mature
-dual-verified registration is **not** operational.
+**What this does not make operational.** Email login, login-factor choice, an upgrade path
+for existing phone-only members, an email-change flow and dual-verification enforcement do
+not exist. Account creation from a registration arrived in the next slice, below, and is
+internal.
+
+#### Registration completion: one transaction, and the account it produces
+
+`App\Registration\CompleteRegistration` takes a registration and a device description and
+returns a `CompletedRegistration` — one account and the initial access/refresh pair. It is
+internal: no route resolves it, no controller calls it, and `openapi.yaml` describes no
+completion operation. The public surface and its error vocabulary are a later slice.
+
+**Completion requires all of it.** A registration that may still be advanced — not expired,
+not already completed — and that carries both canonical identifiers with both proof
+timestamps. Anything less is refused; there is no partial completion and no transitional
+account.
+
+**The account is the registration's, not a copy of its words.** Both canonical identifiers
+and **both proof timestamps** move across unchanged. Stamping `phone_verified_at` with the
+completion time would make the account assert something false about when possession was
+demonstrated, and the registration expires, so nothing could later correct it. Nothing is
+renormalized on the way either: the strings were canonicalized once, by
+`RegistrationService::bind()`, through the value objects `accounts` is indexed on. The id is
+ordinary UUIDv7 and `status` is the column default — a registration does not produce a new
+kind of account.
+
+**One transaction, and the lock order is `registrations` → `accounts` → the session.** The
+registration row is taken `for update` before anything is decided, so two simultaneous
+completions serialize; under READ COMMITTED the loser re-reads the row once the lock is
+granted, sees the winner's `completed_at` and refuses. The account insert and the
+`completed_at` write commit together, so there is never an account whose registration is
+still open and never a completed registration with nothing to show for it. Token issuance
+composes inside the same transaction exactly as `AuthenticateByPhone` does it, because
+`TokenService::issue()` opens none of its own.
+
+**Uniqueness is the database's.** There is no "does an account already exist?" pre-check —
+one would be a race with a window between the read and the insert, and it would quietly
+become the real rule while the index sat unexercised. The insert is attempted and the unique
+indexes arbitrate; only once one has fired does the action read `accounts`, to name **which**
+identifier collided rather than **that** one did. The insert runs in a savepoint for the
+reason `SubmitReview` gives: PostgreSQL aborts a whole transaction on the first failed
+statement, so without it the classification could read nothing. A test holds an uncommitted
+account on a second connection and asserts the completion **blocks on the index** and then
+refuses — which a pre-check would not have done.
+
+**A collision refuses; it never adopts.** Nothing attaches the registration to the existing
+account, merges two accounts or overwrites an identifier. An account already holding the
+number is somebody's — very likely a member who signed up by phone before a second channel
+existed — and treating their row as this registration's outcome would hand a stranger their
+account for the price of one SMS. The transaction unwinds and the registration stays open.
+
+**`registrations` still has no `account_id`, and completion did not change that.** The
+exactly-once boundary rests on `completed_at` under the row lock and on the unique indexes,
+not on any ability to look the account back up; a linkage column would be a second copy of a
+fact, not the thing that makes completion safe. It becomes a column the day a verified
+identifier can change — see the migration.
+
+**The credential dies here.** Once `completed_at` is set the registration is no longer
+advanceable, so `RegistrationService::resolve()` returns the same `null` it returns for an
+unknown credential. There is no "completion replay returns a fresh session": a client that
+loses the response signs in through the normal flow, which is the same answer Phase 9 gives
+for a lost refresh response. Normal account access and refresh tokens remain the only
+post-completion credentials.
+
+**Refusals are typed and internal.** `RegistrationCompletionRefused` carries an
+`App\Registration\RefusalReason`, which is **not** a wire vocabulary yet — nothing
+serializes it. That is deliberate: `email_already_registered` and `phone_already_registered`
+each answer "does an account exist for this identifier?", which is the question an
+enumeration attempt asks and one the sign-in path has never been willing to answer.
+Publishing them is a separate argument. Expired and already-completed collapse into one
+reason, as they do in `isAdvanceable()`.
+
+**What this does not make operational.** There is still no public registration endpoint, no
+OpenAPI registration contract, no client flow, no email login and no dual-verification
+requirement anywhere near `/auth/*` — phone sign-in is byte-for-byte what it was, and a
+first-time member still becomes a phone-only account through it. Neither channel has a
+production provider, so mature dual-verified registration is **not** operational.
 
 ### Rate limiting
 
