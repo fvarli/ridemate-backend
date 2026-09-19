@@ -7,14 +7,13 @@ namespace App\Otp\Email;
 /**
  * The seam an email provider will slot into.
  *
- * NOTHING CALLS THIS YET
+ * ONE CALLER, AND IT IS NOT PUBLIC
  *
- * `OtpChannel::Email` is stored and isolated, but no code path issues a
- * challenge on it: there is no email endpoint, no email column on an account
- * and no caller of this interface outside its own tests. Binding an
- * implementation in the container does not make Email OTP reachable, and this
- * seam exists so that the day one is written, the provider decision is the
- * only thing left to make.
+ * `SendEmailPasscode` calls this, after its challenge has committed. Nothing
+ * public calls `SendEmailPasscode`: there is no email endpoint and no email
+ * column on an account. So the capability is real and the provider decision is
+ * still the only thing left to make — the default implementation refuses, and
+ * in production that is the one bound.
  *
  * DELIBERATELY NARROW, AND DELIBERATELY PROVIDER-NEUTRAL
  *

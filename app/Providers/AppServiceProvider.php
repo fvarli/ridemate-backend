@@ -47,9 +47,11 @@ class AppServiceProvider extends ServiceProvider
             };
         });
 
-        // Resolvable, and that is all. Nothing injects an EmailSender: no code
-        // path issues a passcode on OtpChannel::Email, so a binding here does
-        // not make Email OTP reachable — it makes the seam real.
+        // SendEmailPasscode injects this, and nothing public calls
+        // SendEmailPasscode — there is no email route and no email on an
+        // account. So the binding decides HOW an email passcode would be
+        // delivered, not whether Email OTP is reachable. The default refuses,
+        // which is what a production deployment resolves today.
         $this->app->singleton(EmailSender::class, function (): EmailSender {
             $driver = config('ridemate.email.driver');
 

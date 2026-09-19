@@ -63,6 +63,22 @@ return [
     | and ttl bound it: five guesses inside five minutes. Raising either without
     | raising length weakens the credential.
     |
+    | ONE POLICY FOR EVERY DELIVERED-CODE CHANNEL
+    |
+    | These numbers are not per channel. A passcode delivered by email is the
+    | same credential with the same 10^6 space as one delivered by SMS, so it
+    | gets the same lifetime, the same attempt ceiling and the same issuance
+    | budget. `OtpService` counts them per `(channel, destination)` pair, so the
+    | two channels are ISOLATED from each other while sharing one policy —
+    | email traffic cannot spend a member's SMS allowance, and neither can be
+    | loosened by loosening the other.
+    |
+    | `max_per_destination_per_hour` was `max_per_phone_per_hour` while SMS was
+    | the only channel that existed. Same number, same behaviour; the name
+    | stopped being true the moment an email destination could be counted by
+    | it. None of these keys reads an environment variable, so the rename is
+    | not a deployment concern.
+    |
     */
 
     'otp' => [
@@ -70,7 +86,7 @@ return [
         'ttl' => 300,
         'max_attempts' => 5,
         'resend_cooldown' => 60,
-        'max_per_phone_per_hour' => 5,
+        'max_per_destination_per_hour' => 5,
     ],
 
     /*
@@ -134,17 +150,21 @@ return [
     | configuration change rather than a redesign in the middle of an
     | authentication flow.
     |
-    | Nothing issues an email passcode today. A configured sender does not make
-    | Email OTP reachable: there is no email endpoint and no email on an
-    | account. This key configures delivery, not a feature.
+    | There is an internal application capability that issues and verifies an
+    | email passcode, and it is not reachable from outside: no route resolves
+    | it, no controller calls it, and an account still has no email address. A
+    | configured sender would make delivery work, not make a feature exist.
+    | This key configures delivery.
     |
     | Laravel's `config/mail.php` is framework skeleton this application never
     | reads. It is not RideMate email delivery, and this driver is deliberately
     | not a wrapper around it — `MAIL_MAILER` defaults to the log, which is the
     | last place a passcode may go.
     |
-    | There is no `local_echo` counterpart. Nothing issues an email passcode,
-    | so there is no local workflow for one to serve.
+    | There is no `local_echo` counterpart. Nothing a developer uses issues an
+    | email passcode, and an echo file would have to write a full address and a
+    | live code to disk — a phone number can be truncated to its last four
+    | digits, and an address has no equivalent safe half.
     |
     */
 

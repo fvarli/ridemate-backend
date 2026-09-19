@@ -13,9 +13,11 @@ namespace App\Otp\Email;
  * appears in NEITHER.
  *
  * There is deliberately no local-development sibling of this class. The SMS
- * seam has one because a developer signs in over SMS every day; nothing issues
- * an email passcode, so an echo file would serve no workflow and would exist
- * only for symmetry.
+ * seam has one because a developer signs in over SMS every day; no developer
+ * workflow issues an email passcode, and an echo file would have to write a
+ * full address and a live code to disk — `LocalEchoSmsSender` can truncate a
+ * phone number to its last four digits, and an address has no equivalent
+ * safe half.
  */
 final class InMemoryEmailSender implements EmailSender
 {

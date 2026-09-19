@@ -25,7 +25,10 @@ use Symfony\Component\HttpKernel\Exception\TooManyRequestsHttpException;
  * endings — were never about phones; only the column name was. Every policy
  * read and every lock is now scoped by the PAIR, so a challenge on one channel
  * can neither be found by, invalidated by, nor rate-limited against the other.
- * Only `OtpChannel::Sms` is issued anywhere in the application today.
+ * Both channels are issued: `SendPasscode` for SMS, `SendEmailPasscode` for
+ * email. They share one policy — the lifetime, the attempt ceiling, the
+ * cooldown and the hourly cap are single values in configuration — and share
+ * nothing else, because every count below is taken per pair.
  *
  * WHAT THIS SERVICE DOES NOT DO
  *
@@ -160,23 +163,29 @@ final class OtpService
             ->where('created_at', '>', $now->subHour())
             ->count();
 
-        if ($recent >= $this->setting('max_per_phone_per_hour')) {
+        if ($recent >= $this->setting('max_per_destination_per_hour')) {
             throw self::tooMany();
         }
     }
 
     /**
-     * One message for both limits.
+     * One message for both limits, and for every channel.
      *
      * Distinguishing "too soon" from "too many this hour" would tell a caller
-     * how much history a number has. It is also fixed text containing nothing
-     * the caller supplied, because the renderer puts it in the response body.
+     * how much history a destination has. Naming the KIND of destination would
+     * tell them something else: which channel a refusal came from, and
+     * therefore which channel the service was willing to try. So the text says
+     * neither — no number, no address, no channel. It is also fixed text
+     * containing nothing the caller supplied, because the renderer puts it in
+     * the response body.
+     *
+     * The status and the error code are unchanged. Only the sentence is.
      */
     private static function tooMany(): TooManyRequestsHttpException
     {
         return new TooManyRequestsHttpException(
             null,
-            'Too many passcode requests for this number.',
+            'Too many passcode requests.',
         );
     }
 

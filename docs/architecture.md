@@ -187,9 +187,12 @@ reverses it without reviving revoked sessions.
 ### One-time passcodes
 
 Six digits, five-minute lifetime, five attempts, sixty-second resend cooldown, five issuances
-per number per hour — all in `config/ridemate.php`. Stored as HMAC-SHA256 keyed by `APP_KEY`
-and bound to the phone number, so a leaked table is useless without the key and a hash lifted
-from one row cannot be replayed against another.
+per destination per hour — all in `config/ridemate.php`, and **one policy shared by every
+delivered-code channel**. A passcode is the same 10^6 credential whichever way it travels, so
+SMS and email get the same numbers; `OtpService` counts them per `(channel, destination)` pair,
+so the channels are isolated from one another while sharing that policy. Stored as HMAC-SHA256
+keyed by `APP_KEY` and bound to the destination, so a leaked table is useless without the key
+and a hash lifted from one row cannot be replayed against another.
 
 Issuance runs in one transaction: a per-number `pg_advisory_xact_lock` keyed on 64 bits of a
 domain-separated SHA-256 (not `hashtext`, whose 32 bits collide around seventy thousand
@@ -209,14 +212,55 @@ than accumulating, and recording only the last four digits of the number.
 
 **Production sign-in is not operational until an SMS adapter is configured.**
 
-An **email delivery seam** exists beside it — `App\Otp\Email\EmailSender`, one method, no
+An **email delivery seam** sits beside it — `App\Otp\Email\EmailSender`, one method, no
 provider concepts — with the same refusing default and the same rule that an unrecognised
-driver is a configuration error rather than a silent downgrade. No provider has been
-selected, nothing is sent, and there is deliberately no `local_echo` counterpart because no
-workflow needs one. **Nothing calls it**: no code path issues a challenge on
-`OtpChannel::Email`, no route exposes one, and an account still has no email address, so a
-bound sender makes the seam real without making Email OTP reachable. Laravel's `config/mail.php`
-is framework skeleton this application never reads and is not RideMate email delivery.
+driver is a configuration error rather than a silent downgrade. There is deliberately no
+`local_echo` counterpart: a phone number can be truncated to its last four digits and an
+address has no equivalent safe half. Laravel's `config/mail.php` is framework skeleton this
+application never reads and is not RideMate email delivery.
+
+**No email provider has been selected, and production email delivery is fail-closed.** The
+default driver throws, so a deployment that configures nothing refuses rather than discards.
+
+#### Email OTP is an internal capability, not a feature
+
+`SendEmailPasscode` and `VerifyEmailPasscode` issue and verify a passcode on
+`OtpChannel::Email`, with the same transaction ordering, the same policy numbers and the same
+per-pair isolation as SMS. **Neither is publicly reachable**: no route resolves them, no
+controller calls them, and an account still has no email address.
+
+Destinations are normalized once by `App\Support\EmailAddress`, which delegates syntax to the
+framework's `email:strict` rule — `egulias/email-validator`, already in the dependency set —
+rather than to a second opinion about what an address is. `strict` rather than the looser
+default is load-bearing: it refuses quoted local parts, comments, bare hostnames and address
+literals, which is what makes lowercasing the whole address safe. Surrounding whitespace is
+trimmed, a carriage return anywhere is refused outright, and the address is lowercased in full
+— case-insensitive identity is a product decision, not a standards one, since RFC 5321 makes
+the local part case-sensitive and no provider treats it that way. Nothing else folds: **dots
+and `+tags` stay significant**, because whether they reach one mailbox is a fact about one
+provider's routing rather than a fact about email, and guessing merges two members into one
+identity with no way back. No DNS or MX lookup, and no IDN/punycode conversion — an
+internationalized address is stored as written and lowercased, so `exämple.com` and its
+punycode form remain two destinations.
+
+**A successful email verification proves possession at that instant and returns a bare
+boolean.** It creates no account, issues no access or refresh token, and produces no artifact a
+caller can keep. There is no registration state and no proof credential: what a proven address
+entitles anyone to is the registration slice's question, and inventing a token here to make
+this return something more satisfying would be answering it by accident.
+
+**An unresolved requirement for whichever slice exposes this publicly.** A real provider
+commonly rejects an invalid, unroutable or suppressed recipient *synchronously*, at submission.
+If that surfaced as a failure while a deliverable address succeeded, the endpoint would become
+an address-validity oracle — and, because suppression lists are built from past bounces,
+partly a "has this address been used here before" oracle. The internal capability cannot have
+this problem, because no provider exists and no endpoint exists. It must be resolved before
+either does; it is not solved here, and nothing about it should be assumed decided.
+
+Email addresses are **sensitive data**, on exactly the footing phone numbers are: an address is
+the member's identity and the thing an enumeration attempt is looking for. Neither an address
+nor a passcode may enter the logging pipeline, and no exception message may carry one — the
+renderer puts a message in the response body in a debug build.
 
 ### Rate limiting
 
@@ -227,8 +271,8 @@ requests lose hits and more get through than the limit allows, which is precisel
 concurrency an attacker creates. `DatabaseStore::increment()` runs in a transaction with
 `lockForUpdate()`. **No Redis**: nothing here measures a need for it.
 
-The limits that actually protect a member — one live challenge per number, the cooldown, the
-attempt cap — are counted from `otp_challenges` rows instead, because those must be exact and
+The limits that actually protect a member — one live challenge per destination, the cooldown,
+the attempt cap — are counted from `otp_challenges` rows instead, because those must be exact and
 survive a restart. `$request->ip()` is used for the throttle key and never persisted.
 
 **Four concepts stay separate**, as they have across the whole product: onboarding is a

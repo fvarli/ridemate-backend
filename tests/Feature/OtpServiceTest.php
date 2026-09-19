@@ -186,7 +186,7 @@ final class OtpServiceTest extends TestCase
     public function test_the_hourly_cap_is_enforced(): void
     {
         $cooldown = (int) config('ridemate.otp.resend_cooldown');
-        $cap = (int) config('ridemate.otp.max_per_phone_per_hour');
+        $cap = (int) config('ridemate.otp.max_per_destination_per_hour');
 
         for ($i = 0; $i < $cap; $i++) {
             $this->otp->issue(OtpChannel::Sms, self::PHONE);
@@ -200,7 +200,7 @@ final class OtpServiceTest extends TestCase
     public function test_the_hourly_cap_is_per_number(): void
     {
         $cooldown = (int) config('ridemate.otp.resend_cooldown');
-        $cap = (int) config('ridemate.otp.max_per_phone_per_hour');
+        $cap = (int) config('ridemate.otp.max_per_destination_per_hour');
 
         for ($i = 0; $i < $cap; $i++) {
             $this->otp->issue(OtpChannel::Sms, self::PHONE);

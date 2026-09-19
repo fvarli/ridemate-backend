@@ -185,7 +185,7 @@ final class OtpChannelSeparationTest extends TestCase
      */
     public function test_one_channel_does_not_spend_the_other_budget(): void
     {
-        $cap = (int) config('ridemate.otp.max_per_phone_per_hour');
+        $cap = (int) config('ridemate.otp.max_per_destination_per_hour');
 
         for ($i = 0; $i < $cap; $i++) {
             $this->travel(120)->seconds();
@@ -245,7 +245,7 @@ final class OtpChannelSeparationTest extends TestCase
 
     public function test_one_string_keeps_a_separate_budget_on_each_channel(): void
     {
-        $cap = (int) config('ridemate.otp.max_per_phone_per_hour');
+        $cap = (int) config('ridemate.otp.max_per_destination_per_hour');
 
         for ($i = 0; $i < $cap; $i++) {
             $this->travel(120)->seconds();

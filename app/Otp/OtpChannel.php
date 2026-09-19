@@ -17,13 +17,14 @@ namespace App\Otp;
  * before the second channel does, or the second channel arrives as a schema
  * change in the middle of an authentication flow.
  *
- * ONLY SMS IS OPERATIONAL
+ * ONLY SMS IS PUBLICLY REACHABLE
  *
- * `Email` is declared and stored and nothing issues one. There is no email
- * sender, no email endpoint and no email column on an account, so a challenge
- * on this channel cannot currently be requested or verified through the API.
- * The case exists so that the storage, the indexes and the isolation between
- * channels are real and tested now rather than asserted later.
+ * Both cases are issued and verified by application code. Only SMS is exposed:
+ * `POST /api/v1/auth/otp` delivers on `Sms`, and there is no counterpart for
+ * `Email` — no route, no controller, and no email column on an account. An
+ * email passcode is an internal capability that can prove possession of an
+ * address, built and tested before the slice that decides what proving it
+ * entitles anyone to.
  *
  * NOT A FACTOR, AND NOT A PLACE TO PUT TOTP
  *
@@ -46,8 +47,10 @@ enum OtpChannel: string
     /**
      * A message to an email address.
      *
-     * Declared, stored, isolated and tested — and unreachable from the API
-     * until an email sender and the endpoints that use it exist.
+     * Issued by `SendEmailPasscode` and verified by `VerifyEmailPasscode`,
+     * whose destinations are normalized once by `App\Support\EmailAddress`.
+     * Unreachable from the API: nothing public issues one, and in production
+     * the bound sender refuses because no provider has been selected.
      */
     case Email = 'email';
 }
