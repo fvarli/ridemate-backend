@@ -1,0 +1,302 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use App\Models\Registration;
+use App\Registration\InvalidIdentifier;
+use App\Registration\RegistrationService;
+use Carbon\CarbonImmutable;
+use Illuminate\Database\QueryException;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use RuntimeException;
+use Tests\TestCase;
+
+/**
+ * The registration row: what the database guarantees, and what it deliberately
+ * does not.
+ *
+ * The interesting assertions here are the two that pull in opposite
+ * directions. A verification timestamp without its identifier is refused,
+ * because such a row claims to have proven nothing in particular. But two
+ * in-flight registrations naming one address are ALLOWED, because an unproven
+ * registration confers nothing and a uniqueness rule here would let anyone bar
+ * an address they do not own. Ownership is decided at completion, against
+ * `accounts`, and nowhere else.
+ */
+final class RegistrationPersistenceTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private const EMAIL = 'member@ridemate.invalid';
+
+    private const PHONE = '+905321234567';
+
+    private RegistrationService $registrations;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->registrations = app(RegistrationService::class);
+    }
+
+    // --------------------------------------------------------- canonical form
+
+    /**
+     * CARRIES WEIGHT. One identity, one string.
+     *
+     * The value stored here has to be byte-identical to the one
+     * `otp_challenges.destination` will hold, or the advisory lock, the partial
+     * unique index and the HMAC are all keyed on an identity this row does not
+     * name. So binding goes through the same `EmailAddress` the OTP capability
+     * normalizes with, rather than through a second opinion.
+     */
+    public function test_an_email_is_stored_in_its_canonical_form(): void
+    {
+        $registration = $this->started();
+
+        $this->registrations->bindEmail($registration, '  Member@RideMate.Invalid  ');
+
+        self::assertSame(self::EMAIL, $registration->fresh()?->email);
+    }
+
+    /** The phone counterpart, through `PhoneNumber` and for the same reason. */
+    public function test_a_phone_number_is_stored_in_its_canonical_form(): void
+    {
+        $registration = $this->started();
+
+        $this->registrations->bindPhone($registration, '0532 123 45 67');
+
+        self::assertSame(self::PHONE, $registration->fresh()?->phone_e164);
+    }
+
+    /**
+     * An unparseable identifier never reaches the row.
+     *
+     * Thrown rather than refused, because a caller reaching this point has
+     * already validated its own input — see `InvalidIdentifier`.
+     */
+    public function test_an_unparseable_email_is_refused_and_nothing_is_written(): void
+    {
+        $registration = $this->started();
+
+        $this->expectException(InvalidIdentifier::class);
+
+        try {
+            $this->registrations->bindEmail($registration, 'not an address');
+        } finally {
+            self::assertNull($registration->fresh()?->email);
+        }
+    }
+
+    public function test_an_unparseable_phone_number_is_refused_and_nothing_is_written(): void
+    {
+        $registration = $this->started();
+
+        $this->expectException(InvalidIdentifier::class);
+
+        try {
+            $this->registrations->bindPhone($registration, '+90 999 999 99 99');
+        } finally {
+            self::assertNull($registration->fresh()?->phone_e164);
+        }
+    }
+
+    /** A member who mistyped an address must be able to correct it. */
+    public function test_an_unproven_identifier_may_be_rebound(): void
+    {
+        $registration = $this->started();
+
+        $this->registrations->bindEmail($registration, 'typo@ridemate.invalid');
+        $this->registrations->bindEmail($registration, self::EMAIL);
+
+        self::assertSame(self::EMAIL, $registration->fresh()?->email);
+    }
+
+    /**
+     * CARRIES WEIGHT. A proof belongs to the destination that earned it.
+     *
+     * Rebinding after verification would move a proof to an address nobody
+     * proved, which is the one thing this aggregate exists to prevent. Nothing
+     * in this slice sets the timestamp, so the test writes it directly to reach
+     * the state the guard defends.
+     */
+    public function test_a_proven_identifier_cannot_be_rebound(): void
+    {
+        $registration = $this->started();
+        $this->registrations->bindEmail($registration, self::EMAIL);
+        $this->markProven($registration->id, 'email_verified_at');
+
+        $this->expectException(RuntimeException::class);
+
+        try {
+            $this->registrations->bindEmail(
+                Registration::query()->findOrFail($registration->id),
+                'somebody-else@ridemate.invalid',
+            );
+        } finally {
+            self::assertSame(self::EMAIL, $registration->fresh()?->email);
+        }
+    }
+
+    /** A registration that has ended cannot be advanced, and binding is advancing. */
+    public function test_an_ended_registration_cannot_be_bound(): void
+    {
+        $registration = $this->started();
+
+        DB::table('registrations')
+            ->where('id', $registration->id)
+            ->update(['expires_at' => CarbonImmutable::now()->subSecond()]);
+
+        $this->expectException(RuntimeException::class);
+
+        $this->registrations->bindEmail(
+            Registration::query()->findOrFail($registration->id),
+            self::EMAIL,
+        );
+    }
+
+    // ------------------------------------------------- no in-flight uniqueness
+
+    /**
+     * CARRIES WEIGHT, IN THE OTHER DIRECTION.
+     *
+     * The obvious "one active registration per address" index is a lockout: its
+     * predicate could not mention `expires_at`, because `now()` is not
+     * IMMUTABLE, so an abandoned attempt would bar an address until something
+     * pruned it — and it would buy nothing, because an unproven registration
+     * confers nothing. Two people racing on one address is not a conflict until
+     * one of them finishes.
+     */
+    public function test_two_in_flight_registrations_may_bind_the_same_email(): void
+    {
+        $first = $this->started();
+        $second = $this->started();
+
+        $this->registrations->bindEmail($first, self::EMAIL);
+        $this->registrations->bindEmail($second, self::EMAIL);
+
+        self::assertSame(2, Registration::query()->where('email', self::EMAIL)->count());
+    }
+
+    public function test_two_in_flight_registrations_may_bind_the_same_phone(): void
+    {
+        $first = $this->started();
+        $second = $this->started();
+
+        $this->registrations->bindPhone($first, self::PHONE);
+        $this->registrations->bindPhone($second, self::PHONE);
+
+        self::assertSame(2, Registration::query()->where('phone_e164', self::PHONE)->count());
+    }
+
+    // ------------------------------------------------------ database invariants
+
+    /**
+     * CARRIES WEIGHT. A proof timestamp without its identifier is a row
+     * claiming to have proven nothing in particular.
+     *
+     * Asserted against the database rather than the application, because the
+     * application is not the guarantee: a console command, a future migration
+     * or a manual UPDATE would all bypass a check written in PHP.
+     */
+    public function test_an_email_proof_without_an_email_is_refused(): void
+    {
+        $registration = $this->started();
+
+        $this->expectException(QueryException::class);
+
+        $this->markProven($registration->id, 'email_verified_at');
+    }
+
+    public function test_a_phone_proof_without_a_phone_is_refused(): void
+    {
+        $registration = $this->started();
+
+        $this->expectException(QueryException::class);
+
+        $this->markProven($registration->id, 'phone_verified_at');
+    }
+
+    /** Both proofs are legitimate once both identifiers are named. */
+    public function test_both_proofs_are_accepted_once_both_identifiers_are_bound(): void
+    {
+        $registration = $this->started();
+        $this->registrations->bindEmail($registration, self::EMAIL);
+        $this->registrations->bindPhone($registration, self::PHONE);
+
+        $this->markProven($registration->id, 'email_verified_at');
+        $this->markProven($registration->id, 'phone_verified_at');
+
+        self::assertTrue(Registration::query()->findOrFail($registration->id)->isFullyProven());
+    }
+
+    /**
+     * Two registrations cannot share a credential, or one credential would
+     * resolve two aggregates. It cannot happen by chance; the constraint is
+     * what turns "it cannot" into "it did not".
+     */
+    public function test_a_credential_hash_cannot_be_shared(): void
+    {
+        $first = $this->started();
+        $second = $this->started();
+
+        $this->expectException(QueryException::class);
+
+        DB::table('registrations')
+            ->where('id', $second->id)
+            ->update(['credential_hash' => $first->credential_hash]);
+    }
+
+    /**
+     * The row holds proof and nothing else.
+     *
+     * Every column named here was argued for; a new one arriving without an
+     * argument is the failure this catches. `account_id`, a step, a status and
+     * anything about a device or a profile are absent on purpose — see the
+     * migration.
+     */
+    public function test_the_registration_row_holds_nothing_it_does_not_need(): void
+    {
+        /** @var list<string> $columns */
+        $columns = DB::table('information_schema.columns')
+            ->where('table_schema', 'public')
+            ->where('table_name', 'registrations')
+            ->orderBy('column_name')
+            ->pluck('column_name')
+            ->all();
+
+        self::assertSame([
+            'completed_at',
+            'created_at',
+            'credential_hash',
+            'email',
+            'email_verified_at',
+            'expires_at',
+            'id',
+            'phone_e164',
+            'phone_verified_at',
+        ], $columns);
+    }
+
+    // --------------------------------------------------------------- helpers
+
+    private function started(): Registration
+    {
+        return Registration::query()->findOrFail($this->registrations->start()->registrationId);
+    }
+
+    /**
+     * Written directly, because proof attachment does not exist yet. The
+     * columns are here so the invariants that govern them can be proven before
+     * the slice that writes them arrives.
+     */
+    private function markProven(string $registrationId, string $column): void
+    {
+        DB::table('registrations')
+            ->where('id', $registrationId)
+            ->update([$column => CarbonImmutable::now()]);
+    }
+}

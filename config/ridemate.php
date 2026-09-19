@@ -91,6 +91,34 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Pre-account registration
+    |--------------------------------------------------------------------------
+    |
+    | How long a registration — and therefore its credential, which has no clock
+    | of its own — may still be advanced, in seconds.
+    |
+    | Derived from the passcode numbers above rather than picked freely. A
+    | mature registration proves two destinations, each behind a five-minute
+    | code with a sixty-second resend cooldown. Half an hour leaves a member
+    | room to fumble a code on both channels and ask again a few times, and is
+    | short enough that an abandoned attempt stops holding an email address and
+    | a phone number within the hour.
+    |
+    | This is the registration's LIFETIME, not a retention period. How long an
+    | abandoned row may be KEPT is a separate question, and it has not been
+    | answered — see docs/architecture.md.
+    |
+    | No environment key reads it, like the passcode numbers beside it: it is a
+    | policy value tests resolve through config() rather than repeat.
+    |
+    */
+
+    'registration' => [
+        'ttl' => 1800,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Per-IP rate limits
     |--------------------------------------------------------------------------
     |

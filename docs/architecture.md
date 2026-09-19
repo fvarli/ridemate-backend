@@ -262,6 +262,74 @@ the member's identity and the thing an enumeration attempt is looking for. Neith
 nor a passcode may enter the logging pipeline, and no exception message may carry one — the
 renderer puts a message in the response body in a debug build.
 
+#### Pre-account registration state exists, and nothing public reaches it
+
+A mature new-account registration will require **both** a verified email address and a
+verified phone number. Neither proof alone entitles anyone to anything, so proof has to
+accumulate somewhere before an account exists — and that somewhere is deliberately not
+`accounts`. Creating the account on the first proof and marking it incomplete would put a
+principal the whole application must remember not to trust inside the table that defines
+what a principal is.
+
+So `registrations` holds it: a UUIDv7 id, a nullable canonical email and phone, a nullable
+verification timestamp for each, one `expires_at`, a `completed_at` and a credential hash.
+The proofs are **columns rather than a child table**, for the reason `phone_verified_at` is
+a column — at most two rows per registration, of two known kinds — plus one the account case
+did not have: "both proven" is a `NOT NULL` pair the database can check, where "two rows
+exist" is a COUNT no constraint can express. Two `CHECK`s keep the pair honest in the one
+direction that is true: a verification timestamp requires its identifier, while an
+identifier without one is the ordinary state between issuing a passcode and verifying it.
+
+**There is no uniqueness across in-flight registrations, and that is the decision.** "One
+active registration per address" would need a predicate mentioning `expires_at`, which
+`now()` cannot provide to an index — the wall `otp_challenges` already hit — so "active"
+would degrade to "not completed" and one abandoned attempt would bar an address until
+something pruned it. It would also buy nothing: an unproven registration confers nothing,
+and two people racing on one address is not a conflict until one of them finishes.
+Ownership is decided at completion, against `accounts`, and nowhere else.
+
+**The registration credential is `rmreg_{id}.{secret}`** — 256 bits of `random_bytes`,
+stored as SHA-256 under `rm.registration.v1:`. The prefix is longer than `rma_` and `rmr_`
+because the most important thing to recognise about it is that it is not one of them, and
+the distinct hash domain is the real separation: neither family's digests can validate as
+the other's even with every prefix check deleted. It carries the row id so resolution is a
+primary-key read, it expires with the registration rather than on a clock of its own, and it
+**does not rotate**. Rotation bounds a long-lived credential and detects theft; this one
+lives half an hour and is presented on every step, so re-presenting it is continuation
+rather than reuse — the deliberate opposite of the refresh-token rule, which would otherwise
+sign a member out of a flow they were halfway through.
+
+Malformed, unknown, wrong-secret, expired and completed all resolve to the same `null`, so a
+credential somebody does not hold cannot be probed for whether it ever existed or how it
+ended. A malformed one is refused **before any query**, so caller-supplied text never becomes
+a bound parameter.
+
+**THE COMPLETION INVARIANT.** A registration credential authorizes only the advancement of
+its own pre-account registration. The first successful completion may create the account and
+issue its initial token pair atomically; once `completed_at` is set, the credential must
+never again authorize token or session issuance. If that one response is lost in transit the
+member signs in through the normal flow — the same answer Phase 9 gives for a lost refresh
+response, and for the same reason: a credential that can mint sessions after it has served
+its purpose is an unlimited session factory held by whoever kept a copy.
+
+**What exists after this slice, and what does not.** The aggregate and the credential exist
+as an internal capability: minting, resolving, and binding a canonical destination through
+the same `EmailAddress` and `PhoneNumber` every other writer uses. **Nothing else.** No
+passcode is issued from a registration and no proof is attached — that has to consume an OTP
+challenge and record the proof in **one transaction**, locking **registration before
+challenge**, or a crash between the two spends a challenge that can never be verified again
+and strands the member on a registration that can never complete. No account is created or
+modified, no token is issued, no route resolves any of it, and `openapi.yaml` describes no
+registration operation. **Mature registration is not operational**, and it could not be even
+if the rest existed: neither channel has a production provider.
+
+**Registration retention policy: `LEGAL REVIEW REQUIRED`.** An abandoned registration holds
+an email address and a phone number, and the table has no sweep. Indefinite retention is
+**not an approved permanent policy** — it is the current absence of one. The registration's
+own half-hour lifetime (`ridemate.registration.ttl`) bounds how long a row is *usable*, not
+how long it is *kept*, and the two must not be confused. The cleanup that would enforce a
+retention period is deferred until the period is decided rather than invented here.
+
 ### Rate limiting
 
 Per-IP budgets use Laravel's `throttle` middleware on the **database** cache store. Not the
@@ -887,12 +955,13 @@ until one is configured.
 
 ## The schema, and what is deliberately absent
 
-Twelve tables exist. Phase 9 created `accounts`, `auth_sessions`, `auth_tokens`,
+Thirteen tables exist. Phase 9 created `accounts`, `auth_sessions`, `auth_tokens`,
 `otp_challenges`, and Laravel's own `cache` and `cache_locks`; Phase 10 added `places` and
 `routes`; Phase 11 added `profiles`. Phase 12 added none — discovery reads what publication
 and the profile already store. Phase 13 added `seat_requests`, Phase 14 added `trips`,
 one row per route, and Phase 15 added `reviews`, one row per party per relationship.
-`SchemaAllowlistTest` asserts that list exactly, so a thirteenth cannot
+Phase 18 added `registrations`, one row per registration in progress — see
+*Authentication*. `SchemaAllowlistTest` asserts that list exactly, so a fourteenth cannot
 arrive without editing it — the descendant of Phase 8's "no product table exists" guard,
 which was the same assertion with an empty list.
 
@@ -902,7 +971,8 @@ Still **not created**, each with a reason rather than an oversight:
   make. Both were rejected above.
 * `verifications` — an account exists only after a passcode is verified, so the table would
   hold one row per account, of one kind, in one state. That is a column: `phone_verified_at`.
-  It becomes a table when a second kind exists.
+  It becomes a table when a second kind exists. `registrations` is not it: that holds proof
+  for an account that does not exist yet, and its rows end rather than accumulate.
 * `consents` — recording acceptance of a document that does not exist would be manufacturing
   legal state.
 * `devices` — session rows carry the device metadata a member would be shown; a table earns

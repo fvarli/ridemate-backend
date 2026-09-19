@@ -49,6 +49,9 @@ final class SchemaAllowlistTest extends TestCase
         'otp_challenges',
         'places',
         'profiles',
+        // Phase 18 S4a. Pre-account registration state: proof accumulates here
+        // until an account may be created, so it cannot live on `accounts`.
+        'registrations',
         'reviews',
         'routes',
         'seat_requests',
