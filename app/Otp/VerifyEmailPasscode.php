@@ -51,6 +51,6 @@ final class VerifyEmailPasscode
         $canonical = EmailAddress::normalize($emailAddress)
             ?? throw new InvalidEmailAddress('The destination is not a valid email address.');
 
-        return $this->otp->verify(OtpChannel::Email, $canonical, $code);
+        return $this->otp->verify(OtpChannel::Email, $canonical, $code, OtpScope::standalone());
     }
 }

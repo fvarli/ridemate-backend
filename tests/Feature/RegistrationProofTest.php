@@ -10,6 +10,7 @@ use App\Models\Registration;
 use App\Otp\Email\EmailSender;
 use App\Otp\Email\InMemoryEmailSender;
 use App\Otp\OtpChannel;
+use App\Otp\OtpScope;
 use App\Otp\OtpService;
 use App\Otp\Sms\InMemorySmsSender;
 use App\Otp\Sms\SmsSender;
@@ -100,6 +101,7 @@ final class RegistrationProofTest extends TestCase
 
     protected function tearDown(): void
     {
+        CarbonImmutable::setTestNow();
         $this->truncateCommittedAuthRows();
 
         parent::tearDown();
@@ -157,82 +159,240 @@ final class RegistrationProofTest extends TestCase
     // ------------------------------------------------- proof cannot be stolen
 
     /**
-     * CARRIES WEIGHT. REQUIRED CASE 3.
+     * CARRIES WEIGHT, AND IS THE POINT OF THE CORRECTION.
      *
-     * A code delivered for registration A is not proof for registration B.
+     * A code issued for registration A can never verify registration B, even
+     * though both bind the exact same canonical address.
      *
-     * The mechanism is the one `otp_challenges` already had rather than a new
-     * one: a destination naming a second registration can only come from that
-     * registration asking for its own code, and issuing invalidates every
-     * unresolved predecessor. So the moment B exists as something that could
-     * verify, A's code is dead — and B's code is B's.
-     *
-     * WHAT THIS DOES NOT CLAIM, AND WHY THE TEST IS WRITTEN THIS WAY
-     *
-     * A challenge is keyed by `(channel, destination)` and carries no
-     * registration column, deliberately: the OTP layer never learns what a code
-     * is being used for. Two registrations naming ONE destination therefore
-     * share that destination's single live challenge, and the last send wins
-     * it. That is the accepted consequence of allowing several in-flight
-     * registrations per address, and it is not a way in: every code goes to the
-     * destination itself, so redeeming one still means reading that mailbox or
-     * that phone.
+     * This is now structural rather than a matter of reachability. A live
+     * challenge used to be identified by `(channel, destination)` alone, so two
+     * registrations naming one address shared one row and whoever held the code
+     * could spend it on either. `otp_challenges.registration_id` makes the
+     * identity `(registration_id, channel)` instead, so B's lookup cannot find
+     * A's row at all — there is no ordering of sends, no invalidation rule and
+     * no caller discipline involved.
      */
     public function test_a_code_issued_for_one_registration_cannot_prove_another(): void
+    {
+        [$a, $b, $codeForA, $codeForB] = $this->twoRegistrationsOnOneEmail();
+
+        self::assertNotSame($codeForA, $codeForB);
+
+        self::assertFalse(($this->verify)($b, OtpChannel::Email, $codeForA));
+        self::assertNull($b->fresh()?->email_verified_at);
+
+        self::assertFalse(($this->verify)($a, OtpChannel::Email, $codeForB));
+        self::assertNull($a->fresh()?->email_verified_at);
+
+        // Each still proves its own, which is what makes the refusals above
+        // isolation rather than both challenges simply being broken.
+        self::assertTrue(($this->verify)($a, OtpChannel::Email, $codeForA));
+        self::assertTrue(($this->verify)($b, OtpChannel::Email, $codeForB));
+    }
+
+    /** The same invariant on the phone channel. */
+    public function test_a_code_issued_for_one_registration_cannot_prove_another_by_phone(): void
     {
         $a = $this->started();
         $b = $this->started();
 
-        ($this->send)($a, OtpChannel::Email, self::EMAIL);
-        $codeForA = $this->lastEmailCode();
+        ($this->send)($a, OtpChannel::Sms, self::PHONE);
+        $codeForA = $this->lastSmsCode();
 
-        // Past the cooldown, so B genuinely gets its own challenge — which is
-        // the only way B comes to name this address at all.
         CarbonImmutable::setTestNow(CarbonImmutable::now()->addMinutes(2));
 
         try {
-            ($this->send)($b, OtpChannel::Email, self::EMAIL);
+            ($this->send)($b, OtpChannel::Sms, self::PHONE);
+            $codeForB = $this->lastSmsCode();
 
-            self::assertNotSame($codeForA, $this->lastEmailCode());
+            self::assertFalse(($this->verify)($b, OtpChannel::Sms, $codeForA));
+            self::assertFalse(($this->verify)($a, OtpChannel::Sms, $codeForB));
 
-            self::assertFalse(($this->verify)($b, OtpChannel::Email, $codeForA));
-            self::assertNull($b->fresh()?->email_verified_at);
-
-            // And A's own code is now equally dead, because B's issuance
-            // superseded it. Neither registration can spend the other's.
-            self::assertFalse(($this->verify)($a, OtpChannel::Email, $codeForA));
-            self::assertNull($a->fresh()?->email_verified_at);
+            self::assertTrue(($this->verify)($a, OtpChannel::Sms, $codeForA));
+            self::assertTrue(($this->verify)($b, OtpChannel::Sms, $codeForB));
         } finally {
             CarbonImmutable::setTestNow();
         }
     }
 
     /**
-     * CARRIES WEIGHT. REQUIRED CASE 4.
+     * CARRIES WEIGHT. A resend for one registration leaves the other's alone.
      *
-     * A code earned for one destination cannot be moved to another, because the
-     * destination cannot be moved: binding is write-once per channel, so there
-     * is no state in which the registration names B while a challenge for A is
-     * outstanding. Verification never takes a destination from the caller
-     * either — the parameter does not exist.
+     * Issuance invalidates its predecessors WITHIN ITS SCOPE. Before the
+     * correction it invalidated every unresolved row for the destination, so
+     * one member asking again silently killed a stranger's live code.
      */
-    public function test_a_code_for_one_destination_cannot_follow_a_change_of_destination(): void
+    public function test_a_resend_for_one_registration_does_not_invalidate_the_other(): void
+    {
+        [$a, $b, $codeForA, $codeForB] = $this->twoRegistrationsOnOneEmail();
+
+        // Clears the cooldown B's send started — it is the address's, not B's.
+        CarbonImmutable::setTestNow(CarbonImmutable::now()->addMinutes(2));
+
+        ($this->send)($a, OtpChannel::Email, self::EMAIL);
+        $resentForA = $this->lastEmailCode();
+
+        // A's own predecessor died, as it always has.
+        self::assertFalse(($this->verify)($a, OtpChannel::Email, $codeForA));
+
+        // B's did not.
+        self::assertTrue(($this->verify)($b, OtpChannel::Email, $codeForB));
+
+        self::assertTrue(($this->verify)($a, OtpChannel::Email, $resentForA));
+    }
+
+    // --------------------------------------- registration vs. the sign-in path
+
+    /**
+     * CARRIES WEIGHT, AND IS THE WORSE HALF OF WHAT WAS WRONG.
+     *
+     * A registration SMS code used to be a sign-in code: same channel, same
+     * number, same namespace. Whoever held one could present it at
+     * `POST /auth/otp/verify` and be handed an account.
+     */
+    public function test_a_registration_code_cannot_sign_anybody_in(): void
     {
         $registration = $this->started();
-        ($this->send)($registration, OtpChannel::Email, self::EMAIL);
-        $codeForFirst = $this->lastEmailCode();
+        ($this->send)($registration, OtpChannel::Sms, self::PHONE);
+        $registrationCode = $this->lastSmsCode();
+
+        self::assertFalse(
+            app(OtpService::class)->verify(
+                OtpChannel::Sms,
+                self::PHONE,
+                $registrationCode,
+                OtpScope::standalone(),
+            ),
+        );
+
+        self::assertSame(0, Account::query()->count(), 'a registration code created an account');
+
+        // And it is still spendable where it belongs, so the refusal above was
+        // isolation rather than the code being consumed on its way through.
+        self::assertTrue(($this->verify)($registration, OtpChannel::Sms, $registrationCode));
+    }
+
+    /** And the reverse: a sign-in code proves no registration. */
+    public function test_a_sign_in_code_cannot_prove_a_registration(): void
+    {
+        $registration = $this->started();
+        ($this->send)($registration, OtpChannel::Sms, self::PHONE);
+
+        CarbonImmutable::setTestNow(CarbonImmutable::now()->addMinutes(2));
 
         try {
-            $this->registrations->bind($registration, OtpChannel::Email, self::OTHER_EMAIL);
-            self::fail('the destination was changed after a challenge had been sent to it');
-        } catch (RuntimeException) {
-            // expected
+            $signIn = app(OtpService::class)->issue(OtpChannel::Sms, self::PHONE, OtpScope::standalone());
+
+            self::assertFalse(($this->verify)($registration, OtpChannel::Sms, $signIn->code));
+            self::assertNull($registration->fresh()?->phone_verified_at);
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
+    }
+
+    /**
+     * Issuing for a registration leaves a live sign-in challenge alone, and
+     * vice versa. Neither namespace may supersede the other.
+     */
+    public function test_registration_and_sign_in_challenges_do_not_invalidate_each_other(): void
+    {
+        $registration = $this->started();
+
+        $signIn = app(OtpService::class)->issue(OtpChannel::Sms, self::PHONE, OtpScope::standalone());
+
+        CarbonImmutable::setTestNow(CarbonImmutable::now()->addMinutes(2));
+
+        try {
+            ($this->send)($registration, OtpChannel::Sms, self::PHONE);
+            $registrationCode = $this->lastSmsCode();
+
+            // Both are still live, each in its own namespace.
+            self::assertTrue(($this->verify)($registration, OtpChannel::Sms, $registrationCode));
+            self::assertTrue(
+                app(OtpService::class)->verify(
+                    OtpChannel::Sms,
+                    self::PHONE,
+                    $signIn->code,
+                    OtpScope::standalone(),
+                ),
+            );
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
+    }
+
+    // -------------------------------------------------- the budget is not scoped
+
+    /**
+     * CARRIES WEIGHT, IN THE OTHER DIRECTION.
+     *
+     * Scoping IDENTITY must not scope the ABUSE BUDGET. If each registration
+     * carried its own cooldown and hourly cap, an attacker would mint a hundred
+     * registrations and send one address a hundred times the passcodes — which
+     * is the attack the budget exists for. The cooldown is destination-wide, so
+     * a second registration cannot send to an address that was just sent to.
+     */
+    public function test_minting_registrations_does_not_multiply_the_destination_budget(): void
+    {
+        $a = $this->started();
+        $b = $this->started();
+
+        ($this->send)($a, OtpChannel::Email, self::EMAIL);
+
+        $this->expectException(TooManyRequestsHttpException::class);
+
+        ($this->send)($b, OtpChannel::Email, self::EMAIL);
+    }
+
+    /** The hourly cap counts every scope, so registrations cannot spend around it. */
+    public function test_the_hourly_cap_counts_challenges_from_every_scope(): void
+    {
+        $cap = (int) config('ridemate.otp.max_per_destination_per_hour');
+        $cooldown = (int) config('ridemate.otp.resend_cooldown');
+
+        // One short of the cap, spent by the sign-in namespace.
+        for ($i = 0; $i < $cap - 1; $i++) {
+            app(OtpService::class)->issue(OtpChannel::Email, self::EMAIL, OtpScope::standalone());
+            CarbonImmutable::setTestNow(CarbonImmutable::now()->addSeconds($cooldown + 1));
         }
 
-        self::assertSame(self::EMAIL, $registration->fresh()?->email);
+        try {
+            // A brand-new registration gets the last one, and then the address
+            // is spent for everybody.
+            ($this->send)($this->started(), OtpChannel::Email, self::EMAIL);
+            CarbonImmutable::setTestNow(CarbonImmutable::now()->addSeconds($cooldown + 1));
 
-        // And the original code still proves only what it was sent for.
-        self::assertTrue(($this->verify)($registration, OtpChannel::Email, $codeForFirst));
+            $this->expectException(TooManyRequestsHttpException::class);
+
+            ($this->send)($this->started(), OtpChannel::Email, self::EMAIL);
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
+    }
+
+    /**
+     * The attempt ceiling belongs to the challenge, and each scope has its own.
+     *
+     * Asserted rather than assumed: the existing policy counts attempts on the
+     * challenge ROW, not on the destination, so switching registrations does
+     * give a fresh ceiling — bounded by the destination-wide issuance budget
+     * above, which is what stops that being a way to guess indefinitely.
+     */
+    public function test_the_attempt_ceiling_is_per_challenge_and_issuance_is_what_bounds_guessing(): void
+    {
+        $max = (int) config('ridemate.otp.max_attempts');
+        [$a, $b, $codeForA, $codeForB] = $this->twoRegistrationsOnOneEmail();
+
+        for ($i = 0; $i < $max; $i++) {
+            self::assertFalse(($this->verify)($a, OtpChannel::Email, '000000'));
+        }
+
+        // A's challenge is spent, even for the right code.
+        self::assertFalse(($this->verify)($a, OtpChannel::Email, $codeForA));
+
+        // B's ceiling is its own, because it is a different row — and reaching
+        // this state cost a second issuance against the destination budget.
+        self::assertTrue(($this->verify)($b, OtpChannel::Email, $codeForB));
     }
 
     /** A code for one channel is not a code for the other, on one registration. */
@@ -278,7 +438,7 @@ final class RegistrationProofTest extends TestCase
         try {
             // A fresh challenge and a correct code for it, which is the
             // strongest form of the attempt.
-            $this->issueDirectly(OtpChannel::Email, self::EMAIL);
+            $this->issueDirectly($registration, OtpChannel::Email, self::EMAIL);
 
             self::assertFalse(($this->verify)($registration, OtpChannel::Email, $this->lastEmailCode()));
             self::assertEquals($first, $registration->fresh()?->email_verified_at);
@@ -365,7 +525,7 @@ final class RegistrationProofTest extends TestCase
     {
         $this->expectException(RuntimeException::class);
 
-        app(OtpService::class)->verifyWithin(OtpChannel::Email, self::EMAIL, '000000');
+        app(OtpService::class)->verifyWithin(OtpChannel::Email, self::EMAIL, '000000', OtpScope::standalone());
     }
 
     // -------------------------------------------------------- failure writes
@@ -551,14 +711,42 @@ final class RegistrationProofTest extends TestCase
 
     // --------------------------------------------------------------- helpers
 
+    /**
+     * Two registrations naming one address, each holding its own live challenge.
+     *
+     * The second send is past the cooldown, because the budget is
+     * destination-wide and deliberately stays that way.
+     *
+     * @return array{Registration, Registration, string, string}
+     */
+    private function twoRegistrationsOnOneEmail(): array
+    {
+        $a = $this->started();
+        $b = $this->started();
+
+        ($this->send)($a, OtpChannel::Email, self::EMAIL);
+        $codeForA = $this->lastEmailCode();
+
+        // Past the cooldown, and LEFT there: a caller that resends afterwards
+        // has to clear B's cooldown too, because it belongs to the address.
+        // tearDown puts the clock back.
+        CarbonImmutable::setTestNow(CarbonImmutable::now()->addMinutes(2));
+
+        ($this->send)($b, OtpChannel::Email, self::EMAIL);
+        $codeForB = $this->lastEmailCode();
+
+        return [$a, $b, $codeForA, $codeForB];
+    }
+
     private function started(): Registration
     {
         return Registration::query()->findOrFail($this->registrations->start()->registrationId);
     }
 
-    private function issueDirectly(OtpChannel $channel, string $destination): void
+    /** A fresh challenge in the registration's own scope, without sending one. */
+    private function issueDirectly(Registration $registration, OtpChannel $channel, string $destination): void
     {
-        app(OtpService::class)->issue($channel, $destination);
+        app(OtpService::class)->issue($channel, $destination, OtpScope::forRegistration($registration->id));
     }
 
     private function lastEmailCode(): string

@@ -11,6 +11,7 @@ use App\Otp\Email\EmailSender;
 use App\Otp\Email\InMemoryEmailSender;
 use App\Otp\Email\InvalidEmailAddress;
 use App\Otp\OtpChannel;
+use App\Otp\OtpScope;
 use App\Otp\OtpService;
 use App\Otp\SendEmailPasscode;
 use App\Otp\VerifyEmailPasscode;
@@ -436,7 +437,7 @@ final class EmailOtpCapabilityTest extends TestCase
     {
         $otp = app(OtpService::class);
 
-        $sms = $otp->issue(OtpChannel::Sms, self::EMAIL);
+        $sms = $otp->issue(OtpChannel::Sms, self::EMAIL, OtpScope::standalone());
         $this->send(self::EMAIL);
 
         self::assertSame(2, OtpChallenge::query()->count(), 'one channel invalidated the other');
@@ -445,12 +446,12 @@ final class EmailOtpCapabilityTest extends TestCase
         $emailCode = $this->email->lastCode();
         self::assertNotNull($emailCode);
 
-        self::assertFalse($otp->verify(OtpChannel::Sms, self::EMAIL, $emailCode));
+        self::assertFalse($otp->verify(OtpChannel::Sms, self::EMAIL, $emailCode, OtpScope::standalone()));
         self::assertFalse($this->verify(self::EMAIL, $sms->code));
 
         // And each still works on its own channel afterwards.
         self::assertTrue($this->verify(self::EMAIL, $emailCode));
-        self::assertTrue($otp->verify(OtpChannel::Sms, self::EMAIL, $sms->code));
+        self::assertTrue($otp->verify(OtpChannel::Sms, self::EMAIL, $sms->code, OtpScope::standalone()));
     }
 
     // --------------------------------------------------- staying internal

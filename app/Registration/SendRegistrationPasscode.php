@@ -6,41 +6,52 @@ namespace App\Registration;
 
 use App\Models\Registration;
 use App\Otp\Email\EmailDeliveryFailed;
+use App\Otp\Email\EmailSender;
 use App\Otp\OtpChannel;
-use App\Otp\SendEmailPasscode;
-use App\Otp\SendPasscode;
+use App\Otp\OtpScope;
+use App\Otp\OtpService;
 use App\Otp\Sms\SmsDeliveryFailed;
+use App\Otp\Sms\SmsSender;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /**
- * Bind the destination to the registration, then send it a passcode.
+ * Bind the destination to the registration, then send it a passcode that only
+ * this registration can spend.
  *
- * In that order, and the order is the point. A challenge issued for a
- * destination the registration does not name could never be verified against
- * it — `VerifyRegistrationPasscode` reads the destination from the row and
- * refuses to take one from a caller — so a send that delivered first would be
- * handing out a code for nothing.
+ * WHY THIS DOES NOT DELEGATE TO `SendPasscode` OR `SendEmailPasscode`
+ *
+ * It did, and that was the bug. Those two issue into the STANDALONE scope — the
+ * namespace `POST /auth/otp/verify` reads from — so a registration's SMS code
+ * was a sign-in code, and two registrations naming one address shared the one
+ * live challenge that address was allowed. The fix is not a check before
+ * calling them; it is issuing into a different scope, and the scope is an
+ * argument to `OtpService::issue()`. Passing it through those siblings would
+ * have made the sign-in action take a registration's id, which is the coupling
+ * their separation exists to avoid.
+ *
+ * What is duplicated here is eight lines of dispatch-and-log. What is NOT
+ * duplicated is the part that matters: the issuing transaction, the advisory
+ * lock, the policy read, the predecessor invalidation and the commit-before-
+ * dispatch ordering all still live in `OtpService`, once.
  *
  * ONE ACTION TAKING A CHANNEL, WHERE THE OTP LAYER HAS TWO SIBLINGS
  *
- * `SendPasscode` and `SendEmailPasscode` are siblings because they differ in
- * what they normalize, which sender they fail on and which exception a caller
- * must catch. Here the first of those is gone: normalization belongs to
- * `RegistrationService::bind()`, which is channel-dispatched already because
- * the registration row has one column per kind. What is left is which sibling
- * to delegate to — and delegating is exactly what this does, so neither the
- * issuance ordering, the post-commit dispatch nor the delivery logging is
- * written a second time here.
- *
- * The two delivery exceptions stay distinct and both propagate. A common
+ * Those two are siblings because they differ in what they normalize, which
+ * sender they fail on and which exception a caller must catch. Here the first
+ * is gone — normalization belongs to `RegistrationService::bind()`, which is
+ * channel-dispatched already because the registration row has one column per
+ * kind — and a second pair of actions would double the surface for the two that
+ * remain. The delivery exceptions stay distinct and both propagate; a common
  * parent would be an abstraction invented for one call site.
  *
- * NOT REACHABLE FROM OUTSIDE
+ * BIND FIRST, ALWAYS
  *
- * No route resolves this and no controller calls it. In production both bound
- * senders refuse — no SMS provider and no email provider has been selected —
- * so a caller that appeared today would fail closed on either channel.
+ * A challenge issued for a destination the registration does not name could
+ * never be verified against it: `VerifyRegistrationPasscode` reads the
+ * destination from the row and refuses to take one from a caller. So a send
+ * that delivered first would be handing out a code for nothing.
  *
  * WHY BINDING IS NOT IN THE ISSUING TRANSACTION
  *
@@ -50,15 +61,22 @@ use RuntimeException;
  * leaves a registration that names a destination and holds no challenge, which
  * is the same harmless state as one that was never sent to: the member asks
  * again. Widening the transaction to cover issuance would mean holding the
- * registration row across `OtpService::issue()`'s advisory lock, and then a
- * busy destination would block an unrelated registration's row.
+ * registration row across the destination-wide advisory lock, so a busy address
+ * would block an unrelated registration's row.
+ *
+ * NOT REACHABLE FROM OUTSIDE
+ *
+ * No route resolves this and no controller calls it. In production both senders
+ * refuse — no SMS provider and no email provider has been selected — so a
+ * caller that appeared today would fail closed on either channel.
  */
 final class SendRegistrationPasscode
 {
     public function __construct(
         private readonly RegistrationService $registrations,
-        private readonly SendPasscode $sms,
-        private readonly SendEmailPasscode $email,
+        private readonly OtpService $otp,
+        private readonly SmsSender $sms,
+        private readonly EmailSender $email,
     ) {}
 
     /**
@@ -69,11 +87,11 @@ final class SendRegistrationPasscode
      */
     public function __invoke(Registration $registration, OtpChannel $channel, string $destination): void
     {
-        // Checked here as well as inside the senders, and earlier than they
-        // would: a caller wrapping this in a transaction would otherwise get as
-        // far as binding — a committed write, from its point of view — before
-        // the sender refused, leaving a destination bound for a passcode that
-        // was never issued.
+        // A caller wrapping this in its own transaction would turn issue()'s
+        // commit into a savepoint release, and delivery would then happen
+        // before the outer commit — handing out a passcode for a row that might
+        // still be rolled back. Checked before binding, so a refusal cannot
+        // leave a destination named for a passcode that was never issued.
         if (DB::transactionLevel() > 0) {
             throw new RuntimeException(
                 'Passcode delivery must not run inside a database transaction.',
@@ -91,9 +109,28 @@ final class SendRegistrationPasscode
             throw new RuntimeException('The registration has no destination on that channel.');
         }
 
-        match ($channel) {
-            OtpChannel::Sms => ($this->sms)($canonical),
-            OtpChannel::Email => ($this->email)($canonical),
-        };
+        // The scope is the whole point of the call. Issued here, this challenge
+        // is findable only by this registration — not by another that named the
+        // same address, and not by the sign-in path.
+        $challenge = $this->otp->issue(
+            $channel,
+            $canonical,
+            OtpScope::forRegistration($registration->id),
+        );
+
+        try {
+            match ($channel) {
+                OtpChannel::Sms => $this->sms->sendPasscode($challenge->destination, $challenge->code),
+                OtpChannel::Email => $this->email->sendPasscode($challenge->destination, $challenge->code),
+            };
+        } catch (SmsDeliveryFailed|EmailDeliveryFailed $e) {
+            // The challenge id and nothing else. Not the passcode, which would
+            // put a credential in the log; not the destination, which is the
+            // member's identity; not the registration, which is neither. The id
+            // is enough to find the row.
+            Log::warning('otp.delivery_failed', ['challenge_id' => $challenge->id]);
+
+            throw $e;
+        }
     }
 }

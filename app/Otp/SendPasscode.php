@@ -59,8 +59,10 @@ final class SendPasscode
 
         // Named explicitly rather than defaulted: this action delivers by SMS,
         // and the day a sibling delivers by email the two must be told apart by
-        // what they say, not by which one was written first.
-        $challenge = $this->otp->issue(OtpChannel::Sms, $phoneE164);
+        // what they say, not by which one was written first. The scope is named
+        // for the same reason — this is the sign-in namespace, and a challenge
+        // that landed in it by omission would be one anybody could spend.
+        $challenge = $this->otp->issue(OtpChannel::Sms, $phoneE164, OtpScope::standalone());
 
         try {
             $this->sms->sendPasscode($challenge->destination, $challenge->code);

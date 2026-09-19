@@ -6,6 +6,7 @@ namespace App\Otp;
 
 use App\Models\OtpChallenge;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Symfony\Component\HttpKernel\Exception\TooManyRequestsHttpException;
@@ -30,6 +31,20 @@ use Symfony\Component\HttpKernel\Exception\TooManyRequestsHttpException;
  * cooldown and the hourly cap are single values in configuration — and share
  * nothing else, because every count below is taken per pair.
  *
+ * A SCOPE AS WELL, AND IT IS NOT THE SAME THING AS A BUDGET
+ *
+ * Every call names an `OtpScope`: standalone, or one registration's. The scope
+ * decides IDENTITY — which unresolved row a lookup may find, which rows an
+ * issuance may supersede, and which uniqueness index applies — so two scopes
+ * can never see, consume or invalidate one another's challenges.
+ *
+ * The scope deliberately does NOT reach the cooldown, the hourly cap or the
+ * advisory lock. All three stay keyed on `(channel, destination)` across every
+ * scope, because what they protect is the address: the person whose inbox or
+ * handset receives the message. Scoping them would let an attacker mint a
+ * hundred registrations and send that address a hundred times the passcodes,
+ * which is the attack the budget exists for.
+ *
  * WHAT THIS SERVICE DOES NOT DO
  *
  * It never touches `accounts`. Issuance cannot reveal whether an account
@@ -37,6 +52,10 @@ use Symfony\Component\HttpKernel\Exception\TooManyRequestsHttpException;
  * "was this the right code" — resolving the member is the caller's job. That
  * separation is what makes enumeration resistance structural rather than
  * something the controller has to remember.
+ *
+ * It does not know what a registration IS either. A scope carries an opaque id
+ * and nothing else; whether that id names something with proofs, an expiry or a
+ * completion is the registration layer's business.
  */
 final class OtpService
 {
@@ -48,13 +67,20 @@ final class OtpService
      *
      * @throws TooManyRequestsHttpException when policy refuses another passcode.
      */
-    public function issue(OtpChannel $channel, string $destination): IssuedChallenge
+    public function issue(OtpChannel $channel, string $destination, OtpScope $scope): IssuedChallenge
     {
-        return DB::transaction(function () use ($channel, $destination): IssuedChallenge {
-            // Serializes every issuance for this identity. Two simultaneous
-            // requests for the same number cannot interleave their policy
-            // checks with each other's insert, which is what would otherwise
-            // let both pass the cooldown and one hit the unique index.
+        return DB::transaction(function () use ($channel, $destination, $scope): IssuedChallenge {
+            // Serializes every issuance for this DESTINATION, across every
+            // scope. Two simultaneous requests for the same number cannot
+            // interleave their policy checks with each other's insert, which is
+            // what would otherwise let both pass the cooldown and one hit the
+            // unique index.
+            //
+            // The scope is deliberately not in this key. The policy read below
+            // counts every challenge sent to this destination whoever asked for
+            // it, so the lock has to cover the same set or two registrations
+            // racing on one address would each see the other's budget as
+            // unspent.
             //
             // Transaction-scoped, so it releases on commit AND on rollback
             // without any unlock bookkeeping.
@@ -71,18 +97,25 @@ final class OtpService
             // index cannot know about expiry — `now()` is not IMMUTABLE — so an
             // expired row nobody has pruned would otherwise block this member
             // from ever receiving another passcode.
-            OtpChallenge::query()
-                ->where('channel', $channel)
-                ->where('destination', $destination)
-                ->whereNull('consumed_at')
-                ->whereNull('invalidated_at')
-                ->update(['invalidated_at' => $now]);
+            //
+            // WITHIN THIS SCOPE ONLY. A resend for one registration must not
+            // kill another registration's live challenge just because the two
+            // named the same address, and neither may touch a sign-in.
+            self::withinScope(
+                OtpChallenge::query()
+                    ->where('channel', $channel)
+                    ->where('destination', $destination)
+                    ->whereNull('consumed_at')
+                    ->whereNull('invalidated_at'),
+                $scope,
+            )->update(['invalidated_at' => $now]);
 
             $code = $this->generateCode();
 
             $challenge = new OtpChallenge;
             $challenge->channel = $channel;
             $challenge->destination = $destination;
+            $challenge->registration_id = $scope->registrationId;
             $challenge->code_hash = $this->hash($destination, $code);
             $challenge->expires_at = $now->addSeconds($this->setting('ttl'));
             $challenge->save();
@@ -102,9 +135,9 @@ final class OtpService
      * wants: the phone sign-in path verifies and then decides who that makes
      * you, and those are two decisions rather than one write.
      */
-    public function verify(OtpChannel $channel, string $destination, string $code): bool
+    public function verify(OtpChannel $channel, string $destination, string $code, OtpScope $scope): bool
     {
-        return DB::transaction(fn (): bool => $this->attempt($channel, $destination, $code));
+        return DB::transaction(fn (): bool => $this->attempt($channel, $destination, $code, $scope));
     }
 
     /**
@@ -132,7 +165,7 @@ final class OtpService
      * registration row must take THAT one first — see
      * `App\Registration\VerifyRegistrationPasscode`.
      */
-    public function verifyWithin(OtpChannel $channel, string $destination, string $code): bool
+    public function verifyWithin(OtpChannel $channel, string $destination, string $code, OtpScope $scope): bool
     {
         if (DB::transactionLevel() === 0) {
             throw new RuntimeException(
@@ -140,24 +173,31 @@ final class OtpService
             );
         }
 
-        return $this->attempt($channel, $destination, $code);
+        return $this->attempt($channel, $destination, $code, $scope);
     }
 
     /**
      * The verification itself. Assumes a transaction is already open.
      */
-    private function attempt(OtpChannel $channel, string $destination, string $code): bool
+    private function attempt(OtpChannel $channel, string $destination, string $code, OtpScope $scope): bool
     {
         // The row lock is what makes the attempt cap exact. Without it,
         // parallel guesses read the same counter and each writes back
         // "one more", so five concurrent requests spend one attempt.
-        $challenge = OtpChallenge::query()
-            ->where('channel', $channel)
-            ->where('destination', $destination)
-            ->whereNull('consumed_at')
-            ->whereNull('invalidated_at')
-            ->lockForUpdate()
-            ->first();
+        // Scoped, so a lookup can only ever find a challenge issued for the
+        // thing doing the looking. The destination stays in the predicate for a
+        // registration too: its binding is write-once, so a row whose
+        // destination disagreed with the one just read from the registration
+        // row would mean the two had drifted, and the answer to that is to find
+        // nothing rather than to trust one of them.
+        $challenge = self::withinScope(
+            OtpChallenge::query()
+                ->where('channel', $channel)
+                ->where('destination', $destination)
+                ->whereNull('consumed_at')
+                ->whereNull('invalidated_at'),
+            $scope,
+        )->lockForUpdate()->first();
 
         if (! $challenge instanceof OtpChallenge) {
             return false;
@@ -181,7 +221,29 @@ final class OtpService
     }
 
     /**
+     * Narrows a query to the challenges one scope may see.
+     *
+     * `IS NULL` rather than `= null`, which matches nothing, and the two
+     * branches are exhaustive: a challenge either belongs to a registration or
+     * belongs to none, and there is no third answer a caller could produce.
+     *
+     * @param  Builder<OtpChallenge>  $query
+     * @return Builder<OtpChallenge>
+     */
+    private static function withinScope(Builder $query, OtpScope $scope): Builder
+    {
+        return $scope->registrationId === null
+            ? $query->whereNull('registration_id')
+            : $query->where('registration_id', $scope->registrationId);
+    }
+
+    /**
      * Cooldown and hourly cap, both counted from rows rather than a counter.
+     *
+     * DELIBERATELY UNSCOPED. Every challenge ever sent to this destination
+     * counts, whoever asked for it — a sign-in, this registration, somebody
+     * else's. The budget belongs to the address rather than to the caller, so
+     * minting registrations cannot multiply it.
      *
      * Exact, durable across restarts, and readable during an incident — and it
      * needs no cache store, which is the whole reason this limit does not live

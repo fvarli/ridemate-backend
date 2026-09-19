@@ -6,6 +6,7 @@ namespace App\Registration;
 
 use App\Models\Registration;
 use App\Otp\OtpChannel;
+use App\Otp\OtpScope;
 use App\Otp\OtpService;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -103,7 +104,12 @@ final class VerifyRegistrationPasscode
 
             // LOCK 2 OF 2, inside verifyWithin(). Consumes on success and
             // spends an attempt on a wrong code, exactly as the auth path does.
-            if (! $this->otp->verifyWithin($channel, $destination, $code)) {
+            if (! $this->otp->verifyWithin(
+                $channel,
+                $destination,
+                $code,
+                OtpScope::forRegistration($locked->id),
+            )) {
                 return false;
             }
 

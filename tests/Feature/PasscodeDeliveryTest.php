@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use App\Models\OtpChallenge;
 use App\Otp\OtpChannel;
+use App\Otp\OtpScope;
 use App\Otp\OtpService;
 use App\Otp\SendPasscode;
 use App\Otp\Sms\InMemorySmsSender;
@@ -81,7 +82,7 @@ final class PasscodeDeliveryTest extends TestCase
 
         self::assertSame(1, $this->sms->count());
         self::assertSame(self::PHONE, $this->sms->sent()[0]['phone']);
-        self::assertTrue(app(OtpService::class)->verify(OtpChannel::Sms, self::PHONE, $this->sms->sent()[0]['code']));
+        self::assertTrue(app(OtpService::class)->verify(OtpChannel::Sms, self::PHONE, $this->sms->sent()[0]['code'], OtpScope::standalone()));
     }
 
     /**
@@ -220,8 +221,8 @@ final class PasscodeDeliveryTest extends TestCase
         self::assertNotNull($code);
 
         $otp = app(OtpService::class);
-        $otp->verify(OtpChannel::Sms, self::PHONE, '000000');
-        $otp->verify(OtpChannel::Sms, self::PHONE, $code);
+        $otp->verify(OtpChannel::Sms, self::PHONE, '000000', OtpScope::standalone());
+        $otp->verify(OtpChannel::Sms, self::PHONE, $code, OtpScope::standalone());
 
         foreach ($logged as $event) {
             $line = $event->message.' '.json_encode($event->context);

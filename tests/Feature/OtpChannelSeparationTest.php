@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use App\Models\OtpChallenge;
 use App\Otp\OtpChannel;
+use App\Otp\OtpScope;
 use App\Otp\OtpService;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -59,7 +60,7 @@ final class OtpChannelSeparationTest extends TestCase
 
     public function test_a_challenge_records_the_channel_it_was_issued_on(): void
     {
-        $this->otp->issue(OtpChannel::Sms, self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE, OtpScope::standalone());
 
         $challenge = OtpChallenge::query()->sole();
 
@@ -99,8 +100,8 @@ final class OtpChannelSeparationTest extends TestCase
      */
     public function test_both_channels_may_hold_an_unresolved_challenge_at_once(): void
     {
-        $this->otp->issue(OtpChannel::Sms, self::PHONE);
-        $this->otp->issue(OtpChannel::Email, self::EMAIL);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE, OtpScope::standalone());
+        $this->otp->issue(OtpChannel::Email, self::EMAIL, OtpScope::standalone());
 
         self::assertSame(2, OtpChallenge::query()->count());
         self::assertSame(
@@ -117,7 +118,7 @@ final class OtpChannelSeparationTest extends TestCase
      */
     public function test_one_channel_still_refuses_a_second_unresolved_challenge(): void
     {
-        $this->otp->issue(OtpChannel::Email, self::EMAIL);
+        $this->otp->issue(OtpChannel::Email, self::EMAIL, OtpScope::standalone());
 
         $this->expectException(QueryException::class);
 
@@ -140,9 +141,9 @@ final class OtpChannelSeparationTest extends TestCase
      */
     public function test_issuing_on_one_channel_leaves_the_other_untouched(): void
     {
-        $email = $this->otp->issue(OtpChannel::Email, self::EMAIL);
+        $email = $this->otp->issue(OtpChannel::Email, self::EMAIL, OtpScope::standalone());
 
-        $this->otp->issue(OtpChannel::Sms, self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE, OtpScope::standalone());
 
         $stored = OtpChallenge::query()->findOrFail($email->id);
 
@@ -155,12 +156,12 @@ final class OtpChannelSeparationTest extends TestCase
      */
     public function test_a_code_does_not_verify_on_the_other_channel(): void
     {
-        $issued = $this->otp->issue(OtpChannel::Email, self::EMAIL);
+        $issued = $this->otp->issue(OtpChannel::Email, self::EMAIL, OtpScope::standalone());
 
-        self::assertFalse($this->otp->verify(OtpChannel::Sms, self::EMAIL, $issued->code));
+        self::assertFalse($this->otp->verify(OtpChannel::Sms, self::EMAIL, $issued->code, OtpScope::standalone()));
         // And is still usable where it belongs, so the failure above was
         // isolation rather than the attempt having consumed it.
-        self::assertTrue($this->otp->verify(OtpChannel::Email, self::EMAIL, $issued->code));
+        self::assertTrue($this->otp->verify(OtpChannel::Email, self::EMAIL, $issued->code, OtpScope::standalone()));
     }
 
     /**
@@ -168,10 +169,10 @@ final class OtpChannelSeparationTest extends TestCase
      */
     public function test_verifying_one_channel_does_not_consume_the_other(): void
     {
-        $sms = $this->otp->issue(OtpChannel::Sms, self::PHONE);
-        $email = $this->otp->issue(OtpChannel::Email, self::EMAIL);
+        $sms = $this->otp->issue(OtpChannel::Sms, self::PHONE, OtpScope::standalone());
+        $email = $this->otp->issue(OtpChannel::Email, self::EMAIL, OtpScope::standalone());
 
-        self::assertTrue($this->otp->verify(OtpChannel::Sms, self::PHONE, $sms->code));
+        self::assertTrue($this->otp->verify(OtpChannel::Sms, self::PHONE, $sms->code, OtpScope::standalone()));
 
         self::assertNull(OtpChallenge::query()->findOrFail($email->id)->consumed_at);
     }
@@ -189,12 +190,12 @@ final class OtpChannelSeparationTest extends TestCase
 
         for ($i = 0; $i < $cap; $i++) {
             $this->travel(120)->seconds();
-            $this->otp->issue(OtpChannel::Email, self::EMAIL);
+            $this->otp->issue(OtpChannel::Email, self::EMAIL, OtpScope::standalone());
         }
 
         // The email budget is spent; the SMS one was never touched.
         $this->travel(120)->seconds();
-        $this->otp->issue(OtpChannel::Sms, self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE, OtpScope::standalone());
 
         self::assertSame(
             1,
@@ -207,10 +208,10 @@ final class OtpChannelSeparationTest extends TestCase
      */
     public function test_one_channel_cooldown_does_not_block_the_other(): void
     {
-        $this->otp->issue(OtpChannel::Email, self::EMAIL);
+        $this->otp->issue(OtpChannel::Email, self::EMAIL, OtpScope::standalone());
 
         // Well inside the cooldown, which would refuse a second email.
-        $this->otp->issue(OtpChannel::Sms, self::PHONE);
+        $this->otp->issue(OtpChannel::Sms, self::PHONE, OtpScope::standalone());
 
         self::assertSame(2, OtpChallenge::query()->count());
     }
@@ -234,8 +235,8 @@ final class OtpChannelSeparationTest extends TestCase
 
     public function test_one_string_may_hold_a_challenge_on_each_channel(): void
     {
-        $sms = $this->otp->issue(OtpChannel::Sms, self::SHARED);
-        $email = $this->otp->issue(OtpChannel::Email, self::SHARED);
+        $sms = $this->otp->issue(OtpChannel::Sms, self::SHARED, OtpScope::standalone());
+        $email = $this->otp->issue(OtpChannel::Email, self::SHARED, OtpScope::standalone());
 
         // Issuing the second did not sweep the first.
         self::assertNull(OtpChallenge::query()->findOrFail($sms->id)->invalidated_at);
@@ -249,13 +250,13 @@ final class OtpChannelSeparationTest extends TestCase
 
         for ($i = 0; $i < $cap; $i++) {
             $this->travel(120)->seconds();
-            $this->otp->issue(OtpChannel::Email, self::SHARED);
+            $this->otp->issue(OtpChannel::Email, self::SHARED, OtpScope::standalone());
         }
 
         // The email budget for this string is spent. The SMS one is not, and
         // counting by destination alone would have refused this.
         $this->travel(120)->seconds();
-        $this->otp->issue(OtpChannel::Sms, self::SHARED);
+        $this->otp->issue(OtpChannel::Sms, self::SHARED, OtpScope::standalone());
 
         self::assertSame(
             1,
@@ -268,17 +269,17 @@ final class OtpChannelSeparationTest extends TestCase
 
     public function test_one_string_verifies_only_on_its_own_channel(): void
     {
-        $sms = $this->otp->issue(OtpChannel::Sms, self::SHARED);
-        $this->otp->issue(OtpChannel::Email, self::SHARED);
+        $sms = $this->otp->issue(OtpChannel::Sms, self::SHARED, OtpScope::standalone());
+        $this->otp->issue(OtpChannel::Email, self::SHARED, OtpScope::standalone());
 
         // The SMS code against the email challenge: same destination, wrong
         // channel, and the email challenge must neither accept it nor spend an
         // attempt belonging to the other channel.
         self::assertFalse(
-            $this->otp->verify(OtpChannel::Email, self::SHARED, $sms->code),
+            $this->otp->verify(OtpChannel::Email, self::SHARED, $sms->code, OtpScope::standalone()),
         );
         self::assertTrue(
-            $this->otp->verify(OtpChannel::Sms, self::SHARED, $sms->code),
+            $this->otp->verify(OtpChannel::Sms, self::SHARED, $sms->code, OtpScope::standalone()),
         );
     }
 
@@ -307,8 +308,16 @@ final class OtpChannelSeparationTest extends TestCase
             $indexes,
         );
 
-        self::assertContains('otp_challenges_one_unresolved_per_destination', $names);
         self::assertNotContains('otp_challenges_one_unresolved_per_phone', $names);
+
+        // The destination rule became the STANDALONE destination rule when
+        // registration challenges got an identity of their own. For a table
+        // whose rows all carry a null registration_id — every sign-in
+        // challenge, which is every row this file writes — it is the same
+        // index, which is what keeps the passcode endpoints unchanged.
+        self::assertNotContains('otp_challenges_one_unresolved_per_destination', $names);
+        self::assertContains('otp_challenges_one_unresolved_standalone_per_destination', $names);
+        self::assertContains('otp_challenges_one_unresolved_per_registration_channel', $names);
     }
 
     /**
@@ -323,11 +332,11 @@ final class OtpChannelSeparationTest extends TestCase
     {
         // Issued through the service, which is what the phone flow does, then
         // read back through the channel the migration says it must have.
-        $issued = $this->otp->issue(OtpChannel::Sms, self::PHONE);
+        $issued = $this->otp->issue(OtpChannel::Sms, self::PHONE, OtpScope::standalone());
 
         $stored = OtpChallenge::query()->findOrFail($issued->id);
         self::assertSame(OtpChannel::Sms, $stored->channel);
 
-        self::assertTrue($this->otp->verify(OtpChannel::Sms, self::PHONE, $issued->code));
+        self::assertTrue($this->otp->verify(OtpChannel::Sms, self::PHONE, $issued->code, OtpScope::standalone()));
     }
 }

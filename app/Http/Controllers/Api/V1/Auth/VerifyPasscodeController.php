@@ -8,6 +8,7 @@ use App\Auth\AuthenticateByPhone;
 use App\Http\Requests\VerifyPasscodeRequest;
 use App\Http\Responses\TokenPairResponse;
 use App\Otp\OtpChannel;
+use App\Otp\OtpScope;
 use App\Otp\OtpService;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Http\JsonResponse;
@@ -34,7 +35,7 @@ final class VerifyPasscodeController
     ): JsonResponse {
         $phone = $request->phoneE164();
 
-        if (! $otp->verify(OtpChannel::Sms, $phone, $request->passcode())) {
+        if (! $otp->verify(OtpChannel::Sms, $phone, $request->passcode(), OtpScope::standalone())) {
             // Fixed text, containing nothing the caller supplied, and identical
             // for every reason the passcode did not work.
             throw new AuthenticationException('The passcode is not valid.');

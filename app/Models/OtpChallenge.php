@@ -20,7 +20,14 @@ use Illuminate\Database\Eloquent\Model;
  * one kind, and the rename is what stops the next channel being stored in a
  * column that says it is something else.
  *
+ * `registration_id` is the SCOPE: null for a challenge that belongs to no
+ * registration — the sign-in namespace — and otherwise the registration whose
+ * proof it may earn. It is what stops a code issued for one registration
+ * verifying another that named the same address, and what stops either being
+ * spent at `POST /auth/otp/verify`. See `App\Otp\OtpScope`.
+ *
  * @property string $id
+ * @property string|null $registration_id
  * @property OtpChannel $channel
  * @property string $destination
  * @property string $code_hash

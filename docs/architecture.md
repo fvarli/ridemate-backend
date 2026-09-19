@@ -323,11 +323,35 @@ destination from the locked registration row, so attaching a code earned on an a
 control to a registration naming somebody else's is not something a check has to catch: there
 is nowhere to put the wrong value. **Binding is write-once per channel** and happens only as
 part of sending, so a registration cannot come to name an address it never requested a code
-at — issuance invalidates every unresolved challenge for that destination, so a second
-registration reaches one only by superseding whatever the first held. The accepted residual:
-two registrations naming one destination share its single live challenge and the last send
-wins it, because `otp_challenges` carries no registration column and the OTP layer never
-learns what a code is for. It is not a way in — the code still goes to the destination.
+at.
+
+**A challenge belongs to a scope, and the scope is part of its identity.** A live challenge
+used to be identified by `(channel, destination)` alone, which was right while every challenge
+meant one thing. Registration made it false twice over: several registrations may name one
+address at once — deliberately, since nothing is unique across in-flight registrations — so a
+code issued for one verified another that had merely bound the same address; and a
+registration's SMS code lived in the same namespace as a sign-in, so it could be presented at
+`POST /auth/otp/verify` and open an account. Ordering the writes so that no caller currently
+did either was not a fix: `otp_challenges` is where the identity lives.
+
+So `otp_challenges.registration_id` is nullable, and `App\Otp\OtpScope` is the argument every
+issue and verify now names. NULL is the **standalone** namespace — the sign-in path and the
+internal Email OTP capability — identified by `(channel, destination)` exactly as before, which
+is why `POST /auth/otp` is unchanged. A registration's challenges are identified by
+`(registration_id, channel)`; the destination is not in that key because a registration binds
+one destination per channel, once, for ever. Two partial unique indexes enforce the two rules,
+neither mentioning expiry, because `now()` is not IMMUTABLE — so issuance still invalidates its
+predecessors unconditionally, **within its own scope only**. One registration's resend cannot
+kill another's live code, and neither can touch a sign-in. The foreign key cascades on delete:
+`nullOnDelete` would be a privilege escalation with a tidy name, promoting a registration's
+challenge into the namespace that signs people in.
+
+**The scope partitions identity, never the abuse budget.** The cooldown, the hourly cap and the
+issuance advisory lock stay keyed on `(channel, destination)` across every scope, because what
+they protect is the address — the person whose inbox or handset receives the message. Scoping
+them would let an attacker mint a hundred registrations and send one number a hundred times the
+passcodes, which is the attack the budget exists for. The attempt ceiling stays on the challenge
+row, as it always was, and destination-wide issuance is what bounds guessing across scopes.
 
 **Consumption and proof commit together.** A consumed challenge with no proof is a code that
 can never be verified again on a registration that can therefore never complete; proof
@@ -354,7 +378,7 @@ consumption, invalidation, cooldown, per-`(channel, destination)` budgets, chann
 — and `/api/v1/auth/*` is byte-for-byte what it was.
 
 **What exists after this slice, and what does not.** The aggregate, the credential, and
-registration-scoped issue and verify on both channels, all internal. **Nothing else.** No
+scope-isolated issue and verify on both channels, all internal. **Nothing else.** No
 account is created or modified, no token is issued, no `completed_at` is ever written, no
 route resolves any of it, and `openapi.yaml` describes no registration operation. Completion
 is its own slice. **Mature registration is not operational**, and it could not be even if the

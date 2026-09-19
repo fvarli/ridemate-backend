@@ -71,7 +71,7 @@ final class SendEmailPasscode
         $canonical = EmailAddress::normalize($emailAddress)
             ?? throw new InvalidEmailAddress('The destination is not a valid email address.');
 
-        $challenge = $this->otp->issue(OtpChannel::Email, $canonical);
+        $challenge = $this->otp->issue(OtpChannel::Email, $canonical, OtpScope::standalone());
 
         try {
             $this->email->sendPasscode($challenge->destination, $challenge->code);
