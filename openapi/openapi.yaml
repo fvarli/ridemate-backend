@@ -64,10 +64,12 @@ tags:
       registration that is not an account and confers nothing, and only the last
       of them creates one.
 
-      **Not operational for real members.** Both channels fail closed: no SMS
-      provider and no email provider has been selected, so a passcode cannot be
-      delivered on either. The contract describes what the service serves; what
-      it can deliver is a deployment question with no answer yet.
+      **Not operational for real members.** No SMS provider has been selected,
+      so that channel fails closed. Email has a production-capable adapter,
+      which is not the same as working delivery: it still needs a valid SMTP
+      credential and a smoke test proving a message arrives. The contract
+      describes what the service serves; what it can deliver is a deployment
+      question that is still open.
   - name: Account
     description: The signed-in member's own record. Never another member's.
   - name: Routes

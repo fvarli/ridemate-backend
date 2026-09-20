@@ -86,10 +86,11 @@ use RuntimeException;
  * The warning below is what makes either failure findable. It is the whole
  * server-side record, and it names the challenge and nothing else.
  *
- * Email delivery is operational in production once `RIDEMATE_EMAIL_DRIVER` is
- * `laravel_mail` and `MAIL_*` names a real transport. SMS is not: that sender
- * still refuses, so mature registration still cannot be completed by a real
- * member.
+ * A production-capable email adapter exists behind `RIDEMATE_EMAIL_DRIVER`,
+ * and selecting it is not the same as delivery working: that still needs a
+ * valid SMTP credential and a smoke test proving a message arrives, neither of
+ * which has happened. SMS has no provider at all. So mature registration still
+ * cannot be completed by a real member.
  */
 final class SendRegistrationPasscode
 {

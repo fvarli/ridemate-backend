@@ -218,10 +218,18 @@ driver is a configuration error rather than a silent downgrade. There is deliber
 `local_echo` counterpart: a phone number can be truncated to its last four digits and an
 address has no equivalent safe half.
 
-**Email delivery is operational.** `RIDEMATE_EMAIL_DRIVER=laravel_mail` resolves
-`LaravelMailEmailSender`, which hands the passcode to Laravel's own mail stack as an ordinary
-text message. No provider SDK and no new dependency: the thing on the other side is SMTP, and
-the framework already ships the transport, the message builder and the configuration for it.
+**A production-capable email adapter is implemented, and is not yet activated.**
+`RIDEMATE_EMAIL_DRIVER=laravel_mail` resolves `LaravelMailEmailSender`, which hands the
+passcode to Laravel's own mail stack as an ordinary text message. No provider SDK and no new
+dependency: the thing on the other side is SMTP, and the framework already ships the
+transport, the message builder and the configuration for it.
+
+**Two things stand between that and operational email delivery**, and neither is code. A valid
+SMTP credential has to be configured for the pilot sender — none is present in this repository
+and none ever may be — and a controlled delivery smoke test has to confirm that a message
+actually arrives. Until both are done, the adapter is proven by its tests and by nothing else:
+the suite sends through Laravel's `array` transport and opens no socket, so a green suite says
+the right message is produced, not that anybody received one.
 
 **Two keys, two questions.** `ridemate.email.driver` decides WHETHER RideMate delivers email;
 `config/mail.php` decides HOW, and no RideMate code reads it. That separation is what keeps
@@ -240,9 +248,10 @@ than at the first member's attempt — the same rule `LocalEchoSmsSender` follow
 it when the adapter's `Mailer` is injected. Local and testing keep every convenience; the
 suite itself runs on `array`.
 
-**The pilot sender is a shared mailbox on a shared domain**, delivering through Zoho Mail's EU
-SMTP endpoint. The region is load-bearing — the non-EU host answers `535` for this account,
-which reads as a bad password and sends an operator hunting for the wrong thing. A RideMate
+**The pilot sender is designated, not yet proven.** A shared mailbox on a shared domain,
+configured to deliver through Zoho Mail's EU SMTP endpoint. The region is load-bearing — the
+non-EU host answers `535` for this account, which reads as a bad password and sends an
+operator hunting for the wrong thing. A RideMate
 sender identity, its domain and its DNS are production-hardening work this pilot has not done,
 and nothing in the code depends on which mailbox it is.
 
@@ -666,7 +675,8 @@ address or one handset receives.
 
 **Mature registration is still not operational for real members.** The SMS sender fails closed
 in production — no SMS provider has been selected — so no real member can receive a phone
-passcode, and mature registration requires both. Email delivery is answered; SMS is not.
+passcode, and mature registration requires both. So even once email delivery is activated,
+this stays true: the email half would be answered and the SMS half would not.
 
 ### Rate limiting
 
