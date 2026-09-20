@@ -20,10 +20,16 @@ use Tests\TestCase;
 /**
  * The coarse per-IP limits, and the store they depend on.
  *
- * No routes use these yet — the contract commit comes first — so the limiters
- * are exercised directly. What matters here is the store: the whole reason for
- * adding two cache tables is that the file store cannot count correctly under
- * concurrency, and that claim deserves an assertion rather than a comment.
+ * The limiters are exercised directly rather than through their routes, so a
+ * budget is asserted once wherever it is referenced. What matters here is the
+ * store: the whole reason for adding two cache tables is that the file store
+ * cannot count correctly under concurrency, and that claim deserves an
+ * assertion rather than a comment.
+ *
+ * Registration's four limiters are listed beside the sign-in three and are
+ * deliberately not the same names. A throttle buckets by its limiter name, so
+ * reusing one would let a registration attempt spend a member's ability to sign
+ * in from the same network.
  */
 final class RateLimitingTest extends TestCase
 {
@@ -58,6 +64,19 @@ final class RateLimitingTest extends TestCase
             'otp request' => ['rm-otp-request', 'otp_request_per_ip_per_hour'],
             'otp verify' => ['rm-otp-verify', 'otp_verify_per_ip_per_hour'],
             'refresh' => ['rm-auth-refresh', 'refresh_per_ip_per_hour'],
+            'registration start' => ['rm-registration-start', 'registration_start_per_ip_per_hour'],
+            'registration otp request' => [
+                'rm-registration-otp-request',
+                'registration_otp_request_per_ip_per_hour',
+            ],
+            'registration otp verify' => [
+                'rm-registration-otp-verify',
+                'registration_otp_verify_per_ip_per_hour',
+            ],
+            'registration complete' => [
+                'rm-registration-complete',
+                'registration_complete_per_ip_per_hour',
+            ],
         ];
     }
 

@@ -681,15 +681,23 @@ final class RegistrationProofTest extends TestCase
         self::assertNull($fresh->completed_at, 'proof completed the registration');
     }
 
-    /** Nothing public reaches any of this. */
-    public function test_no_route_resolves_the_registration_proof_capability(): void
+    /**
+     * The public surface reaches these two through controllers, and through
+     * nothing else.
+     *
+     * Phase 18 S4e gave them endpoints, so the older assertion — that no route
+     * uri mentions a registration — stopped being the invariant. What still
+     * holds, and matters more now that a route exists, is that neither action
+     * is a route's own target: an invokable route resolving
+     * `SendRegistrationPasscode` directly would be one with no request
+     * validation, no credential resolution and no error mapping in front of it.
+     */
+    public function test_no_route_resolves_the_registration_proof_capability_directly(): void
     {
         foreach (Route::getRoutes()->getRoutes() as $route) {
             foreach ([SendRegistrationPasscode::class, VerifyRegistrationPasscode::class] as $class) {
                 self::assertStringNotContainsString($class, $route->getActionName());
             }
-
-            self::assertStringNotContainsString('registration', $route->uri());
         }
     }
 

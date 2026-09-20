@@ -31,11 +31,14 @@ use RuntimeException;
  * BINDING: which destination a registration names on a channel, canonicalized
  * once, through the same value objects every other writer uses.
  *
- * NOT REACHABLE FROM OUTSIDE
+ * REACHED FROM OUTSIDE ONLY THROUGH CONTROLLERS
  *
- * No route resolves this and no controller calls it. It is an internal
- * application capability, written and tested before the slice that decides what
- * a registration may become.
+ * Phase 18 S4e gave registration four endpoints, and they resolve this — but no
+ * route targets it directly, so nothing reaches `start()`, `resolve()` or
+ * `bind()` without a request class and an error mapping in front of it. What is
+ * unchanged is everything that made it safe while it was internal: it still
+ * never touches `accounts`, never opens a session and never issues a token, and
+ * there is still no code path from here to `TokenService`.
  */
 final class RegistrationService
 {
@@ -156,7 +159,18 @@ final class RegistrationService
      * code still goes to the destination, so redeeming it still means holding
      * that mailbox or that phone.
      *
+     * WHY THE REFUSALS ARE TYPED
+     *
+     * They were three bare `RuntimeException`s while nothing public called
+     * this. A public endpoint has to answer a vanished-or-ended registration
+     * and an already-bound channel differently — the first is a credential that
+     * stopped working, the second is a state a client can act on — and telling
+     * them apart from an untyped exception means matching on its message. See
+     * `RegistrationAdvanceRefused`.
+     *
      * @throws InvalidIdentifier when the value is not a destination of this kind.
+     * @throws RegistrationAdvanceRefused when the registration has ended, or the
+     *                                    channel already names another destination.
      */
     public function bind(Registration $registration, OtpChannel $channel, string $destination): void
     {
@@ -168,12 +182,10 @@ final class RegistrationService
                 ->lockForUpdate()
                 ->first();
 
-            if (! $locked instanceof Registration) {
-                throw new RuntimeException('The registration no longer exists.');
-            }
-
-            if (! $locked->isAdvanceable()) {
-                throw new RuntimeException('The registration can no longer be advanced.');
+            // Gone and ended are one refusal, exactly as `resolve()` makes them
+            // one null: from outside they are the same ending.
+            if (! $locked instanceof Registration || ! $locked->isAdvanceable()) {
+                throw RegistrationAdvanceRefused::registrationEnded();
             }
 
             $bound = $locked->destinationOn($channel);
@@ -182,9 +194,7 @@ final class RegistrationService
                 // Deliberately says neither destination, and does not say
                 // whether the bound one was proven. Both are facts about an
                 // identity the caller has just demonstrated it does not know.
-                throw new RuntimeException(
-                    'This registration is already bound to a different destination on that channel.',
-                );
+                throw RegistrationAdvanceRefused::channelAlreadyBound();
             }
 
             if ($bound === null) {

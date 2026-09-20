@@ -11,6 +11,10 @@ use App\Http\Controllers\Api\V1\Journeys\ShowJourneyController;
 use App\Http\Controllers\Api\V1\MeController;
 use App\Http\Controllers\Api\V1\Profiles\SaveProfileController;
 use App\Http\Controllers\Api\V1\Profiles\ShowProfileController;
+use App\Http\Controllers\Api\V1\Registration\CompleteRegistrationController;
+use App\Http\Controllers\Api\V1\Registration\RequestRegistrationPasscodeController;
+use App\Http\Controllers\Api\V1\Registration\StartRegistrationController;
+use App\Http\Controllers\Api\V1\Registration\VerifyRegistrationPasscodeController;
 use App\Http\Controllers\Api\V1\Reviews\ListMyReviewsController;
 use App\Http\Controllers\Api\V1\Reviews\SubmitReviewController;
 use App\Http\Controllers\Api\V1\Routes\CancelRouteController;
@@ -66,6 +70,48 @@ Route::post('auth/refresh', RefreshController::class)
 Route::post('auth/logout', LogoutController::class)
     ->middleware('auth.token')
     ->name('auth.logout');
+
+/*
+ * Pre-account registration — the four steps that turn two proven possessions
+ * into one account.
+ *
+ * NONE OF THESE CARRIES `auth.token`, AND NONE MAY EVER
+ *
+ * Their credential is `rmreg_…`, which authorises exactly one thing:
+ * advancing the registration it names. It is not a bearer credential and could
+ * not become one — `AuthenticateToken` resolves `rma_` against `auth_tokens`
+ * and an `rmreg_` value cannot parse there — so it travels in the body, for the
+ * reason the refresh credential does. There is no registration id in any path:
+ * the row id is inside the credential, and a path segment carrying it would
+ * look like an address and be treated as an authorization.
+ *
+ * `registrations/otp` and `registrations/otp/verify` mirror the sign-in pair
+ * deliberately. They are NOT the same endpoints with a flag: a registration's
+ * challenge is issued into its own `OtpScope`, so a code from here cannot be
+ * spent at `auth/otp/verify` and a sign-in code cannot prove a registration.
+ * One shape, two namespaces, and the separation lives in `otp_challenges`.
+ *
+ * Throttled per IP with their own budgets rather than sharing the sign-in ones.
+ * Sharing a named limiter would share a bucket, so a registration attempt could
+ * spend a member's ability to sign in — and the budgets that actually protect a
+ * person are the destination-wide ones counted from `otp_challenges`, which
+ * span every scope and cannot be multiplied by minting registrations.
+ */
+Route::post('registrations', StartRegistrationController::class)
+    ->middleware('throttle:rm-registration-start')
+    ->name('registrations.start');
+
+Route::post('registrations/otp', RequestRegistrationPasscodeController::class)
+    ->middleware('throttle:rm-registration-otp-request')
+    ->name('registrations.otp.request');
+
+Route::post('registrations/otp/verify', VerifyRegistrationPasscodeController::class)
+    ->middleware('throttle:rm-registration-otp-verify')
+    ->name('registrations.otp.verify');
+
+Route::post('registrations/complete', CompleteRegistrationController::class)
+    ->middleware('throttle:rm-registration-complete')
+    ->name('registrations.complete');
 
 /*
  * The signed-in member's own account.

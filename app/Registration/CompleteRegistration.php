@@ -82,11 +82,18 @@ use Illuminate\Support\Facades\DB;
  * unwinds, the existing account is not read for anything but classification,
  * and the registration stays open.
  *
- * NOT REACHABLE FROM OUTSIDE
+ * ITS PUBLIC CALLER, AND WHERE THE REFUSALS BECOME ANSWERS
  *
- * No route resolves this and no controller calls it. It is the domain
- * transaction; the public surface, its error vocabulary and its response shape
- * are the next slice's.
+ * `POST /api/v1/registrations/complete` resolves this now. What it publishes is
+ * the ordinary token pair and nothing else — no account, no registration, no
+ * proof timestamp.
+ *
+ * The refusals below are NOT published as they stand. `App\Support\ExceptionRenderer`
+ * collapses `EmailAlreadyRegistered` and `PhoneAlreadyRegistered` into one
+ * `account_already_exists`, because the distinction this class works out by
+ * looking is exactly the question an enumeration attempt asks. Keeping it
+ * truthful here and narrowing it there is the whole reason the reason is a value
+ * rather than an HTTP status.
  */
 final class CompleteRegistration
 {

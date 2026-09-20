@@ -763,13 +763,33 @@ final class RouteContractTest extends TestCase
 
         self::assertArrayHasKey('anyOf', $reason);
         self::assertArrayNotHasKey('oneOf', $reason);
-        // Three domains now. `id_already_used` is shared by two of them, which
-        // is a second reason `oneOf` could never have worked here.
+        // Four domains now — registration joined in Phase 18 S4e.
+        // `id_already_used` is shared by two of them, which is a second reason
+        // `oneOf` could never have worked here.
         self::assertSame([
             ['$ref' => '#/components/schemas/SeatRequestRefusalReason'],
             ['$ref' => '#/components/schemas/TripRefusalReason'],
             ['$ref' => '#/components/schemas/ReviewRefusalReason'],
+            ['$ref' => '#/components/schemas/RegistrationRefusalReason'],
         ], $reason['anyOf']);
+
+        // Registration shares no string with any of them, and that is not an
+        // accident of naming: its vocabulary is deliberately narrower than its
+        // own domain's, so nothing in it could coincide with a reason another
+        // domain publishes verbatim.
+        /** @var list<string> $registration */
+        $registration = $schemas['RegistrationRefusalReason']['enum'];
+
+        foreach (['SeatRequestRefusalReason', 'TripRefusalReason', 'ReviewRefusalReason'] as $other) {
+            /** @var list<string> $enum */
+            $enum = $schemas[$other]['enum'];
+
+            self::assertSame(
+                [],
+                array_values(array_intersect($registration, $enum)),
+                "registration shares a wire string with {$other}",
+            );
+        }
 
         /** @var list<string> $review */
         $review = $schemas['ReviewRefusalReason']['enum'];

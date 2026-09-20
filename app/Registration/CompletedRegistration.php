@@ -18,12 +18,17 @@ use App\Models\Account;
  * one. A caller that missed this object has to sign in normally, exactly as a
  * client that lost the response will have to.
  *
- * NOT A RESPONSE
+ * STILL NOT A RESPONSE
  *
- * No controller builds one of these and no payload publishes one. What a public
- * completion endpoint returns — whether it publishes the account at all, and in
- * which shape — is the next slice's question. This is the internal result of a
- * domain transaction, and it says what that transaction actually did.
+ * `POST /api/v1/registrations/complete` reads `tokens` off one of these and
+ * hands it to `TokenPairResponse`, the same shaper sign-in and refresh use. The
+ * `account` is deliberately NOT published: `GET /api/v1/me` is the endpoint that
+ * publishes an account, it is authenticated by the token pair this carries, and
+ * a second projection of the same row would be a second decision about what an
+ * account may say.
+ *
+ * So this remains the internal result of a domain transaction — what it did,
+ * rather than what a caller is told.
  */
 final readonly class CompletedRegistration
 {

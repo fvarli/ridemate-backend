@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Support;
 
+use App\Registration\RefusalReason as RegistrationRefusalReason;
+use App\Registration\RegistrationAdvanceRefused;
+use App\Registration\RegistrationCompletionRefused;
 use App\Reviews\ReviewRefused;
 use App\SeatRequests\RefusalReason;
 use App\SeatRequests\SeatRequestRefused;
@@ -35,7 +38,10 @@ final class ExceptionRenderer
         return ApiError::response(
             $request,
             $code,
-            self::message($e, $code, $status),
+            // `$details` is passed because one family of refusals derives its
+            // message from the reason that SURVIVED the mapping rather than
+            // from the exception. See self::message().
+            self::message($e, $code, $status, $details),
             $status,
             $details,
         );
@@ -72,6 +78,10 @@ final class ExceptionRenderer
                 409,
                 ['reason' => $e->reason->value],
             ],
+            // And beside all three, but unlike any of them the reason is
+            // TRANSLATED rather than published. See self::registration().
+            $e instanceof RegistrationAdvanceRefused,
+            $e instanceof RegistrationCompletionRefused => self::registration($e->reason),
             $e instanceof AuthenticationException => [ApiError::UNAUTHENTICATED, 401, null],
             $e instanceof AuthorizationException => [ApiError::FORBIDDEN, 403, null],
             $e instanceof ModelNotFoundException => [ApiError::NOT_FOUND, 404, null],
@@ -117,6 +127,59 @@ final class ExceptionRenderer
             : [ApiError::CONFLICT, 409, $details];
     }
 
+    /**
+     * A registration refusal, as a status, a code and — where one may be given
+     * at all — a wire reason that is NOT the internal one.
+     *
+     * THIS IS THE ONLY ARM THAT TRANSLATES
+     *
+     * Seat requests, trips and reviews publish `$e->reason->value` verbatim,
+     * one case to one string. Registration does not, and the difference is the
+     * decision rather than an inconsistency.
+     *
+     * `EmailAlreadyRegistered` and `PhoneAlreadyRegistered` are one wire
+     * string. Each answers "does an account already exist for THIS identifier?"
+     * — the question an enumeration attempt asks, and one the sign-in path has
+     * never been willing to answer. Kept apart on the wire they would let a
+     * caller aim a registration at an address and a number and read back which
+     * half was taken; collapsed, the answer is the one thing a client can act
+     * on — you already have an account, sign in — and says nothing about which
+     * identifier produced it. The domain keeps the distinction because an
+     * operator reading a refusal needs it; the caller does not get it.
+     *
+     * `RegistrationEnded` carries NO reason and is a 401, which is the same
+     * answer a malformed, unknown or wrong-secret credential gets from
+     * `RegistrationService::resolve()`. Giving it a 409 with a reason of its
+     * own would tell the holder of a credential whether the registration behind
+     * it expired or was already finished — which is completion history for a
+     * registration they have just demonstrated they cannot advance.
+     *
+     * The two that ARE published are facts about the caller's own registration
+     * and about nothing else: it has not proven both channels, or it already
+     * names a different destination on the one asked about. Neither names an
+     * identifier, and neither is reachable without holding the credential.
+     *
+     * @return array{0: string, 1: int, 2: array<string, mixed>|null}
+     */
+    private static function registration(RegistrationRefusalReason $reason): array
+    {
+        if ($reason === RegistrationRefusalReason::RegistrationEnded) {
+            return [ApiError::UNAUTHENTICATED, 401, null];
+        }
+
+        return [ApiError::CONFLICT, 409, ['reason' => match ($reason) {
+            RegistrationRefusalReason::NotFullyProven => 'not_fully_proven',
+            RegistrationRefusalReason::ChannelAlreadyBound => 'channel_already_bound',
+            // The collapse. Both internal reasons, one public answer.
+            RegistrationRefusalReason::EmailAlreadyRegistered,
+            RegistrationRefusalReason::PhoneAlreadyRegistered => 'account_already_exists',
+            // `RegistrationEnded` is not an arm here: the guard above returned
+            // it, and static analysis knows. The match stays exhaustive over
+            // what remains, so a case added to the enum fails here rather than
+            // arriving on the wire as whatever the default happened to be.
+        }]];
+    }
+
     private static function codeForStatus(int $status): string
     {
         return match ($status) {
@@ -156,11 +219,41 @@ final class ExceptionRenderer
      * The 500 branch keeps its existing behaviour, because a developer running
      * with debug on genuinely needs the real exception and no client is
      * reading it.
+     *
+     *   A COLLAPSE THE MESSAGE WOULD OTHERWISE UNDO. `RefusalReason` has two
+     *   cases for an account that already exists — one for the address, one for
+     *   the number — and `self::registration()` publishes ONE `details.reason`
+     *   for both. The exception's own message says which, in plain English, so
+     *   returning it would hand back through `message` exactly the distinction
+     *   `details` was collapsed to hide, and would do it in every environment
+     *   because these are not 500s.
+     *
+     *   So a registration refusal's message is derived from `$details` — the
+     *   reason that survived the mapping — rather than from the exception. The
+     *   two cannot disagree, because there is only one value left to read by
+     *   the time this runs.
+     *
+     * @param  array<string, mixed>|null  $details
      */
-    private static function message(Throwable $e, string $code, int $status): string
+    private static function message(Throwable $e, string $code, int $status, ?array $details = null): string
     {
         if ($status >= 500 && ! config('app.debug')) {
             return 'An unexpected error occurred.';
+        }
+
+        if ($e instanceof RegistrationAdvanceRefused || $e instanceof RegistrationCompletionRefused) {
+            $reason = $details['reason'] ?? null;
+
+            return match (is_string($reason) ? $reason : null) {
+                'not_fully_proven' => 'That registration has not proven both an email address and a phone number.',
+                'channel_already_bound' => 'This registration is already bound to a different destination on that channel.',
+                'account_already_exists' => 'An account already exists.',
+                // No reason at all: the registration has ended, and the answer
+                // is word-for-word the one an unresolvable credential gets, so
+                // a credential that ended cannot be told from one that never
+                // resolved.
+                default => 'The registration credential is not valid.',
+            };
         }
 
         return match ($code) {

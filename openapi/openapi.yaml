@@ -54,6 +54,20 @@ tags:
       Proving possession of a phone number, and exchanging that proof for
       credentials. There is no password anywhere in RideMate, so there is
       nothing to hash, leak or reset.
+  - name: Registration
+    description: |
+      Opening an account by proving BOTH an email address and a phone number.
+
+      Distinct from Authentication, and deliberately so. `/auth/*` proves one
+      possession and signs a member in, creating a phone-only account if none
+      existed. These four steps accumulate two proofs against a pre-account
+      registration that is not an account and confers nothing, and only the last
+      of them creates one.
+
+      **Not operational for real members.** Both channels fail closed: no SMS
+      provider and no email provider has been selected, so a passcode cannot be
+      delivered on either. The contract describes what the service serves; what
+      it can deliver is a deployment question with no answer yet.
   - name: Account
     description: The signed-in member's own record. Never another member's.
   - name: Routes
@@ -289,6 +303,229 @@ paths:
               $ref: '#/components/headers/RequestId'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+
+  /api/v1/registrations:
+    post:
+      operationId: startRegistration
+      tags: [Registration]
+      summary: Begin a registration
+      security: []
+      description: |
+        Opens a pre-account registration and returns the credential that
+        advances it.
+
+        **No account exists after this and no session does.** The credential
+        authorises exactly one thing — advancing the registration it names — and
+        is not a bearer credential for this API. It goes in the BODY of the
+        three requests that continue the flow, never in `Authorization`, for the
+        reason the refresh credential does: a header invites clients to attach
+        it to ordinary requests, where it would spread through logs and proxies.
+
+        **There is no request body, and no identifier is named here.** A
+        registration starts empty. A destination is bound at the moment a
+        passcode is sent to it, which is what stops a registration coming to
+        name an address nobody asked for a code at — and leaves both
+        verification orders open, since neither channel is privileged.
+
+        Nothing about this response varies. It consults no account, reads
+        nothing a caller supplied, and cannot differ between a stranger and a
+        member.
+      responses:
+        '201':
+          description: A registration is open. Nothing else was created.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationStarted'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/registrations/otp:
+    post:
+      operationId: requestRegistrationPasscode
+      tags: [Registration]
+      summary: Send a registration passcode on a channel
+      security: []
+      description: |
+        Binds the destination to this registration's channel and sends a
+        passcode to it.
+
+        **Binding is write-once per channel.** Naming the same destination again
+        is a resend and is accepted; naming a DIFFERENT one is `409`
+        `channel_already_bound`, and the body says neither destination and never
+        whether the bound one was proven. A member who mistyped starts another
+        registration — they are cheap, short-lived, and nothing is unique across
+        them.
+
+        **The response never reveals whether an account exists**, exactly as
+        `POST /api/v1/auth/otp` does not. It is `202` with the same fixed body
+        in every case, and nothing on the server side looks: an account is
+        consulted only at completion.
+
+        **A registration's passcode is not a sign-in passcode.** It is issued
+        into this registration's own scope, so it cannot be spent at
+        `POST /api/v1/auth/otp/verify`, a sign-in code cannot prove a
+        registration, and another registration that named the same destination
+        cannot see it.
+
+        **Rate limits span registrations.** The resend cooldown and the hourly
+        cap are counted per destination across every scope, so opening more
+        registrations cannot multiply what one address or one handset receives.
+
+        `500` includes a delivery failure: the passcode was recorded but could
+        not be handed to a provider, so a retry is subject to the usual
+        cooldown. It says nothing about the destination, and a provider adapter
+        must keep it that way — surfacing a per-recipient rejection differently
+        from a generic failure would make this a deliverability oracle. **Both
+        channels fail closed today**, because no provider has been selected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationPasscodeRequest'
+      responses:
+        '202':
+          description: Accepted for delivery. Says nothing about the destination.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OtpAccepted'
+        '401':
+          $ref: '#/components/responses/RegistrationCredentialRejected'
+        '409':
+          $ref: '#/components/responses/RegistrationConflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/registrations/otp/verify:
+    post:
+      operationId: verifyRegistrationPasscode
+      tags: [Registration]
+      summary: Prove a registration channel
+      security: []
+      description: |
+        Records that this registration proved possession of the destination it
+        named on a channel.
+
+        **There is nowhere in this request to put a destination, and that is the
+        point.** The destination is read from the registration itself, so a code
+        earned on an address you control cannot be attached to a registration
+        naming somebody else's. A `destination`, `email` or `phone` key here is
+        refused as an unknown field and read by nothing.
+
+        **Nothing is created.** No account, no session, no token — proving one
+        channel entitles the holder to nothing at all, and proving both entitles
+        them only to call `POST /api/v1/registrations/complete`.
+
+        **Proof is write-once per channel.** A channel already proven is refused
+        like any other failure, so a second verification cannot move the
+        timestamp of a proof nobody re-earned.
+
+        Either channel may be proven first. The two are independent, and a
+        client tracks its own progress from these responses — there is no status
+        endpoint, and no proof timestamp is published anywhere.
+
+        Every failure is the same `401`: no outstanding passcode, expired,
+        superseded, attempts exhausted, wrong code, a channel nothing was sent
+        on, a channel already proven, and a credential that no longer resolves.
+        A caller cannot tell how close a guess was, or whether a passcode was
+        ever issued.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationVerifyRequest'
+      responses:
+        '204':
+          description: |
+            The channel is proven. The body is empty on purpose: the client made
+            this request and knows what it proved, and a proof timestamp is a
+            fact no client acts on.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+        '401':
+          $ref: '#/components/responses/RegistrationCredentialRejected'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/v1/registrations/complete:
+    post:
+      operationId: completeRegistration
+      tags: [Registration]
+      summary: Turn a fully proven registration into an account
+      security: []
+      description: |
+        Creates exactly one account from a registration that proved both
+        possessions, and returns the initial session opened on it.
+
+        **The body is the ordinary token pair** — the same one sign-in and
+        refresh return. What the member holds afterwards is a normal session,
+        indistinguishable from one obtained by signing in, which is exactly what
+        it is. The account itself is not published here; `GET /api/v1/me` is
+        authenticated by this access token and is where an account is read.
+
+        **Both proof timestamps move onto the account unchanged.** It records
+        when possession was demonstrated, not when the account was made.
+
+        **Once, and never again.** The credential is spent by the first success.
+        A replay is `401`, never a second account and never a fresh session. A
+        client that loses this response signs in through the normal flow — the
+        same answer refresh gives for a lost response, and for the same reason:
+        a credential that can mint sessions after it has served its purpose is
+        an unlimited session factory held by whoever kept a copy.
+
+        **A collision refuses; it never adopts.** If an account already holds
+        the address or the number, the answer is `409` `account_already_exists`
+        and the registration stays open and uncompleted. Nothing is merged,
+        attached or overwritten — an account already holding the number is
+        somebody's, very likely a member who signed up by phone before a second
+        channel existed. **Which identifier collided is deliberately not
+        stated**: the server knows, and telling a caller would let a
+        registration be aimed at an address and a number to read back which half
+        was already a member.
+
+        A registration that has not proven both channels is `409`
+        `not_fully_proven`. There is no partial completion and no transitional
+        account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationCompleteRequest'
+      responses:
+        '200':
+          description: The account exists and its first session is open.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '401':
+          $ref: '#/components/responses/RegistrationCredentialRejected'
+        '409':
+          $ref: '#/components/responses/RegistrationConflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /api/v1/me:
     get:
@@ -1697,6 +1934,49 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    RegistrationCredentialRejected:
+      description: |
+        The registration credential is missing, malformed, unknown, expired, or
+        belongs to a registration that has already produced an account — and, on
+        the verify operation, also every way a passcode can fail.
+
+        Which of those it was is deliberately not stated, and the collapse goes
+        further than the one on `401` elsewhere. Separating "expired" from
+        "already completed" would tell whoever holds a credential whether the
+        registration behind it was ever finished, which is completion history
+        for a registration they have just shown they cannot advance.
+
+        There is no recovery from this beyond starting again, or — if the
+        registration did complete — signing in normally.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RegistrationConflict:
+      description: |
+        The registration is not in the state the step needed.
+
+        `details.reason` says which, as a stable machine string a client maps to
+        its own approved copy. No `details.current_status` accompanies it: a
+        registration has no published state, and naming one here would be the
+        status endpoint this contract does not have.
+
+        **The vocabulary is narrower than the server's own**, on purpose.
+        `account_already_exists` is one string for two internal facts — an
+        address already registered and a number already registered — because a
+        caller able to tell them apart could aim a registration at an identifier
+        pair and read back which half belongs to a member. Collapsing them
+        leaves the one thing a client can act on and removes the oracle.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     RateLimited:
       description: |
         Too many attempts. Applies per number and per address; the response does
@@ -1924,6 +2204,7 @@ components:
                     - $ref: '#/components/schemas/SeatRequestRefusalReason'
                     - $ref: '#/components/schemas/TripRefusalReason'
                     - $ref: '#/components/schemas/ReviewRefusalReason'
+                    - $ref: '#/components/schemas/RegistrationRefusalReason'
                 current_status:
                   $ref: '#/components/schemas/SeatRequestStatus'
               additionalProperties:
@@ -2085,6 +2366,173 @@ components:
             ended. Not a credential and not accepted as one.
           examples:
             - '00000000-0000-7000-8000-000000000001'
+
+    RegistrationCredential:
+      type: string
+      minLength: 1
+      maxLength: 512
+      description: |
+        The credential from `POST /api/v1/registrations`, carried in the BODY of
+        every step that continues the flow.
+
+        **Not a bearer credential.** It must never be sent in `Authorization`,
+        and it authenticates nothing: no protected route accepts it, and it
+        could not be mistaken for an access token even if one tried — the two
+        families are hashed under different domains, so neither can validate as
+        the other.
+
+        Opaque. It is a lookup key, not a container: clients must not parse it,
+        split it, or infer anything from its shape. It expires with the
+        registration rather than on a clock of its own, does not rotate, and is
+        presented on every step — re-presenting it is continuation, not reuse,
+        and revokes nothing. It stops working the moment the registration
+        produces an account.
+
+        Store it where the platform keeps secrets for as long as the flow runs,
+        and discard it afterwards.
+      examples:
+        - 'rmreg_00000000-0000-7000-8000-000000000000.EXAMPLE-REGISTRATION-CREDENTIAL-NOT-A-REAL-ONE'
+
+    RegistrationChannel:
+      type: string
+      description: |
+        Which possession a step is about. A registration binds one destination
+        per channel, once, and proves each independently — in either order.
+      enum: [email, sms]
+
+    RegistrationStarted:
+      type: object
+      additionalProperties: false
+      required: [registration_credential, expires_at]
+      description: |
+        The whole body. It carries no registration identifier: the id is inside
+        the credential already, and publishing a second name for the
+        registration would hand clients something that looks like an address and
+        is not an authorization.
+
+        It carries no proof state either — a registration that has just started
+        has proven nothing, and a client tracks the rest from its own successful
+        steps.
+      properties:
+        registration_credential:
+          $ref: '#/components/schemas/RegistrationCredential'
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            When this registration stops being advanceable, whatever it has
+            proven by then. There is no extension and no renewal: a member who
+            runs out starts another, which costs nothing.
+          examples:
+            - '2026-08-23T10:11:00Z'
+
+    RegistrationPasscodeRequest:
+      type: object
+      additionalProperties: false
+      required: [registration_credential, channel, destination]
+      properties:
+        registration_credential:
+          $ref: '#/components/schemas/RegistrationCredential'
+        channel:
+          $ref: '#/components/schemas/RegistrationChannel'
+        destination:
+          type: string
+          minLength: 3
+          maxLength: 254
+          description: |
+            Where the passcode goes — an email address when `channel` is
+            `email`, a phone number when it is `sms`.
+
+            Given as the member would write it, and normalized to one canonical
+            identity server-side: `0532 123 45 67`, `+90 532 123 45 67` and
+            `905321234567` are the same person, and an address is lowercased in
+            full. Nothing else is folded — a dot and a `+tag` are part of an
+            address, and guessing otherwise merges two people into one identity
+            with no way back.
+
+            **This is the only step that accepts one.** The registration binds
+            it here and reads it back itself when the passcode is verified.
+          examples:
+            - 'member@example.com'
+
+    RegistrationVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [registration_credential, channel, code]
+      description: |
+        **No destination, by construction.** The registration already knows
+        where its passcode went, and a body that could name one would let a code
+        earned on an address you control be attached to a registration naming
+        somebody else's.
+      properties:
+        registration_credential:
+          $ref: '#/components/schemas/RegistrationCredential'
+        channel:
+          $ref: '#/components/schemas/RegistrationChannel'
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+          description: |
+            The passcode from the message.
+
+            The example is a fixed placeholder and is not a value this service
+            would ever issue by preference.
+          examples:
+            - '000000'
+
+    RegistrationCompleteRequest:
+      type: object
+      additionalProperties: false
+      required: [registration_credential]
+      description: |
+        The credential, and optionally the device the session belongs to.
+
+        **No identifier is accepted here.** Both were bound and proven in
+        earlier steps, and taking one at the moment the account is created would
+        put an unproven value on it. No profile data either: a display name is
+        `PUT /api/v1/me/profile`, authenticated by the token pair this returns.
+      properties:
+        registration_credential:
+          $ref: '#/components/schemas/RegistrationCredential'
+        device_name:
+          type: string
+          maxLength: 64
+          description: |
+            Shown back to the member when they review their sessions, and to
+            nobody else. Client-supplied and never trusted: nothing authorises
+            on it.
+          examples:
+            - 'Pixel 8'
+        platform:
+          type: string
+          maxLength: 32
+          description: Display metadata only. Not trusted, not authorised on.
+          examples:
+            - 'android'
+        app_version:
+          type: string
+          maxLength: 32
+          description: Display metadata only. Not trusted, not authorised on.
+          examples:
+            - '1.0.0'
+
+    RegistrationRefusalReason:
+      type: string
+      description: |
+        Why a registration step was refused, as a stable machine string.
+
+        **Narrower than the server's own vocabulary, deliberately.** The domain
+        distinguishes an address already registered from a number already
+        registered; this does not, because a caller able to tell them apart
+        could read back which half of an identifier pair belongs to a member.
+        A credential that has ended is not in this list at all — it is a `401`
+        with no reason, so completion history cannot be probed.
+
+        Renaming one is a breaking contract change.
+      enum:
+        - not_fully_proven
+        - account_already_exists
+        - channel_already_bound
 
     ProfileEnvelope:
       type: object

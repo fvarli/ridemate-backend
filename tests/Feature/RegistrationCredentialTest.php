@@ -291,16 +291,27 @@ final class RegistrationCredentialTest extends TestCase
     /**
      * CARRIES WEIGHT. Nothing public reaches any of this.
      *
-     * There is no registration API after this slice, so a route resolving any
-     * of these classes would mean one arrived without a contract.
+     * Phase 18 S4e gave registration a contract and four routes. What it did
+     * not give it is an account credential, so the assertion that matters is
+     * narrower and sharper than "no registration route exists": no route
+     * resolves the credential machinery as its own target, and no registration
+     * route is authenticated.
+     *
+     * The second half is the load-bearing one. A registration credential is not
+     * an account credential, and `auth.token` on any of these paths would mean
+     * either that an `rmreg_` value had been taught to authenticate — which the
+     * hash domains make impossible — or that a member had to sign in before
+     * they could open an account.
      */
-    public function test_no_route_resolves_the_registration_capability(): void
+    public function test_no_route_resolves_the_registration_capability_or_authenticates_it(): void
     {
         $internal = [
             RegistrationService::class,
             RegistrationSecret::class,
             Registration::class,
         ];
+
+        $registrationRoutes = 0;
 
         foreach (Route::getRoutes()->getRoutes() as $route) {
             foreach ($internal as $class) {
@@ -311,12 +322,26 @@ final class RegistrationCredentialTest extends TestCase
                 );
             }
 
-            self::assertStringNotContainsString(
-                'registration',
-                $route->uri(),
-                'a public registration route exists',
+            if (! str_starts_with($route->uri(), 'api/v1/registrations')) {
+                self::assertStringNotContainsString(
+                    'registration',
+                    $route->uri(),
+                    'a registration surface exists outside /api/v1/registrations',
+                );
+
+                continue;
+            }
+
+            $registrationRoutes++;
+
+            self::assertNotContains(
+                'auth.token',
+                $route->gatherMiddleware(),
+                'a registration route is authenticated by an account credential',
             );
         }
+
+        self::assertSame(4, $registrationRoutes, 'the registration surface is exactly four steps');
     }
 
     // --------------------------------------------------------------- helpers

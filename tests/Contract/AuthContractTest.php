@@ -89,6 +89,10 @@ final class AuthContractTest extends TestCase
             '/api/v1/auth/otp/verify',
             '/api/v1/auth/refresh',
             '/api/v1/auth/logout',
+            '/api/v1/registrations',
+            '/api/v1/registrations/otp',
+            '/api/v1/registrations/otp/verify',
+            '/api/v1/registrations/complete',
             '/api/v1/me',
             '/api/v1/me/profile',
             '/api/v1/places',
@@ -136,6 +140,11 @@ final class AuthContractTest extends TestCase
         // that grows deliberately. `trips` would in any case have missed the
         // three that shipped, which are singular and route-scoped; a guard that
         // passes for the wrong reason is worse than one that is gone.
+        // `register` and `login` guard the endpoint shape RideMate does not
+        // have: a password sign-up and a password sign-in. Phase 18's
+        // `/api/v1/registrations` is neither, and does not contain either
+        // string — it names a pre-account resource that accumulates two
+        // possession proofs and is not an account until it produces one.
         foreach ([
             'messages',
             'conversations', 'vehicles', 'safety', 'notifications',
@@ -197,6 +206,16 @@ final class AuthContractTest extends TestCase
             'refresh' => ['/api/v1/auth/refresh', 'post', false],
             'sign out' => ['/api/v1/auth/logout', 'post', true],
             'me' => ['/api/v1/me', 'get', true],
+            // The four registration steps carry a credential that is NOT a
+            // bearer token and must never be modelled as one. Declaring them
+            // `bearerAuth` would tell every generated client to put an
+            // `rmreg_` value in an Authorization header, where it would spread
+            // through logs and proxies — and no protected route would accept
+            // it anyway.
+            'start registration' => ['/api/v1/registrations', 'post', false],
+            'registration passcode' => ['/api/v1/registrations/otp', 'post', false],
+            'registration verify' => ['/api/v1/registrations/otp/verify', 'post', false],
+            'complete registration' => ['/api/v1/registrations/complete', 'post', false],
         ];
     }
 
@@ -232,6 +251,7 @@ final class AuthContractTest extends TestCase
         self::assertSame([
             'Unauthenticated', 'Forbidden', 'ValidationFailed', 'NotFound', 'Conflict',
             'SeatRequestConflict', 'TripConflict', 'ReviewConflict',
+            'RegistrationCredentialRejected', 'RegistrationConflict',
             'RateLimited', 'InternalError',
         ], array_keys($responses));
 

@@ -226,8 +226,11 @@ default driver throws, so a deployment that configures nothing refuses rather th
 
 `SendEmailPasscode` and `VerifyEmailPasscode` issue and verify a passcode on
 `OtpChannel::Email`, with the same transaction ordering, the same policy numbers and the same
-per-pair isolation as SMS. **Neither is publicly reachable**: no route resolves them, no
-controller calls them, and an account still has no email address.
+per-pair isolation as SMS. **Neither is publicly reachable**: no route resolves them and no
+controller calls them. The registration path does not go through them either —
+`SendRegistrationPasscode` issues into a registration's own scope and deliberately does not
+delegate to these, which is what keeps a registration's code out of the namespace that signs
+people in.
 
 Destinations are normalized once by `App\Support\EmailAddress`, which delegates syntax to the
 framework's `email:strict` rule — `egulias/email-validator`, already in the dependency set —
@@ -249,13 +252,23 @@ caller can keep. There is no registration state and no proof credential: what a 
 entitles anyone to is the registration slice's question, and inventing a token here to make
 this return something more satisfying would be answering it by accident.
 
-**An unresolved requirement for whichever slice exposes this publicly.** A real provider
-commonly rejects an invalid, unroutable or suppressed recipient *synchronously*, at submission.
-If that surfaced as a failure while a deliverable address succeeded, the endpoint would become
-an address-validity oracle — and, because suppression lists are built from past bounces,
-partly a "has this address been used here before" oracle. The internal capability cannot have
-this problem, because no provider exists and no endpoint exists. It must be resolved before
-either does; it is not solved here, and nothing about it should be assumed decided.
+**A requirement now carried by the adapter, not by the endpoint.** A real provider commonly
+rejects an invalid, unroutable or suppressed recipient *synchronously*, at submission. If that
+surfaced as a failure while a deliverable address succeeded, the endpoint would become an
+address-validity oracle — and, because suppression lists are built from past bounces, partly a
+"has this address been used here before" oracle.
+
+Phase 18 S4e created the endpoint — `POST /api/v1/registrations/otp` — and did **not** create
+the problem, because it added no provider. Every sender that exists is
+destination-independent: both production senders refuse every send, and the local echo fails
+only on a filesystem error. So a delivery failure there is a plain `500` saying nothing about
+the destination, exactly as on `POST /api/v1/auth/otp`, and that is truthful rather than a
+`202` faked over a failure.
+
+What the endpoint could not do is satisfy the requirement in advance. **It belongs to the
+slice that introduces a provider**: that adapter must map a per-recipient rejection onto the
+same outcome as a generic failure, or the oracle arrives with it. Nothing about how is
+assumed decided.
 
 Email addresses are **sensitive data**, on exactly the footing phone numbers are: an address is
 the member's identity and the thing an enumeration attempt is looking for. Neither an address
@@ -318,7 +331,9 @@ its purpose is an unlimited session factory held by whoever kept a copy.
 
 `SendRegistrationPasscode` binds a destination to a registration and then sends a passcode to
 it; `VerifyRegistrationPasscode` takes a registration, a channel and a code, and writes the
-proof. Both are internal — no route resolves either.
+proof. Neither is a route's own target; both are reached through the controllers of the
+public API described below, which is what puts request validation, credential resolution and
+error mapping in front of them.
 
 **Verification takes no destination, and that is the whole security property.** It reads the
 destination from the locked registration row, so attaching a code earned on an address you
@@ -380,12 +395,12 @@ consumption, invalidation, cooldown, per-`(channel, destination)` budgets, chann
 — and `/api/v1/auth/*` is byte-for-byte what it was.
 
 **What the proof slice itself does, and does not.** The aggregate, the credential, and
-scope-isolated issue and verify on both channels, all internal. **Nothing else.** Neither
+scope-isolated issue and verify on both channels. **Nothing else.** Neither
 `SendRegistrationPasscode` nor `VerifyRegistrationPasscode` creates or modifies an account,
 issues a token or writes `completed_at` — acting on two proofs is `CompleteRegistration`,
-below, and it is a separate transaction. No route resolves any of it, and `openapi.yaml`
-describes no registration operation. **Mature registration is not operational**, and it could
-not be even if the rest existed: neither channel has a production provider.
+below, and it is a separate transaction. That was true while none of it was reachable and is
+still true now that it is. **Mature registration is not operational**, and it could not be
+even if the rest existed: neither channel has a production provider.
 
 **Registration retention policy: `LEGAL REVIEW REQUIRED`.** An abandoned registration holds
 an email address and a phone number, and the table has no sweep. Indefinite retention is
@@ -433,8 +448,8 @@ internal.
 
 `App\Registration\CompleteRegistration` takes a registration and a device description and
 returns a `CompletedRegistration` — one account and the initial access/refresh pair. It is
-internal: no route resolves it, no controller calls it, and `openapi.yaml` describes no
-completion operation. The public surface and its error vocabulary are a later slice.
+reached through `POST /api/v1/registrations/complete`, which publishes the token pair and
+nothing else; the public surface and its error vocabulary are described below.
 
 **Completion requires all of it.** A registration that may still be advanced — not expired,
 not already completed — and that carries both canonical identifiers with both proof
@@ -524,11 +539,90 @@ enumeration attempt asks and one the sign-in path has never been willing to answ
 Publishing them is a separate argument. Expired and already-completed collapse into one
 reason, as they do in `isAdvanceable()`.
 
-**What this does not make operational.** There is still no public registration endpoint, no
-OpenAPI registration contract, no client flow, no email login and no dual-verification
-requirement anywhere near `/auth/*` — phone sign-in is byte-for-byte what it was, and a
-first-time member still becomes a phone-only account through it. Neither channel has a
-production provider, so mature dual-verified registration is **not** operational.
+**What the completion slice itself does not make operational.** No client flow, no email
+login and no dual-verification requirement anywhere near `/auth/*` — phone sign-in is
+byte-for-byte what it was, and a first-time member still becomes a phone-only account
+through it. Neither channel has a production provider, so mature dual-verified registration
+is **not** operational, which is still true after the public API below.
+
+#### The public registration API — four steps, and the vocabulary it refuses to publish
+
+`POST /api/v1/registrations` opens one, `POST /api/v1/registrations/otp` binds a destination
+and sends it a passcode, `POST /api/v1/registrations/otp/verify` records the proof, and
+`POST /api/v1/registrations/complete` turns two proofs into one account and returns the
+ordinary token pair. That is the whole surface. It exposes the S4a–S4d state machine as it
+already is; the only domain change it forced was typing `RegistrationService::bind()`'s
+refusals, because two of the three are different public answers and telling them apart from
+an untyped `RuntimeException` would have made the wire contract a function of English prose.
+
+**The credential travels in the body and there is no registration id in any path.** Same
+argument as the refresh credential, and stronger: `rmreg_` authorises one thing, is not a
+bearer credential, and cannot parse in `AuthenticateToken` at all. A path segment carrying
+the row id would look like an address and be treated as an authorization by the first client
+that tried. No cookie, and no `auth.token` on any of the four routes.
+
+**Start takes no body.** The registration begins empty and a destination is named at the
+moment a code is sent to it, which is what stops a registration naming an address nobody
+asked for a code at — and leaves both verification orders open, since neither channel is
+privileged. **Verify takes no destination**, by the signature and by the contract, so the
+attack the pre-account boundary exists for cannot be expressed through HTTP either.
+
+**The wire vocabulary is deliberately narrower than the domain's**, and
+`App\Support\ExceptionRenderer` is the one place they are translated. This is the only
+refusal family in the application that does not publish `$e->reason->value` verbatim:
+
+| Internal `RefusalReason` | Public answer |
+|---|---|
+| `RegistrationEnded` | `401 unauthenticated`, no `details` |
+| `NotFullyProven` | `409 conflict`, `details.reason: not_fully_proven` |
+| `ChannelAlreadyBound` | `409 conflict`, `details.reason: channel_already_bound` |
+| `EmailAlreadyRegistered` | `409 conflict`, `details.reason: account_already_exists` |
+| `PhoneAlreadyRegistered` | `409 conflict`, `details.reason: account_already_exists` |
+
+The last two collapse because each answers "does an account already exist for THIS
+identifier?" — the question an enumeration attempt asks, and one the sign-in path has never
+been willing to answer. Kept apart on the wire, a caller could aim a registration at an
+address and a number and read back which half belongs to a member. The domain keeps the
+distinction because an operator reading a refusal needs it; the caller gets the one thing
+they can act on.
+
+**The collapse reaches `message`, not only `details`.** The refusal messages say which
+identifier collided in plain English, and `message` is not suppressed outside a 500 — so
+returning the exception's own text would have handed back through one field exactly what the
+other was collapsed to hide, in every environment. A registration refusal's message is
+therefore derived from the reason that SURVIVED the mapping rather than from the exception,
+so the two cannot disagree. `RegistrationEnded` gets the same sentence an unresolvable
+credential gets, word for word.
+
+**Completion replay is a `401`, never a session.** `completed_at` makes the credential stop
+resolving, so the second attempt is indistinguishable from an unknown one and creates
+nothing. A client that loses the response signs in normally.
+
+**No status endpoint, and no proof timestamp anywhere.** A client knows what it has proven
+because it made those requests and read their answers; `expires_at` comes back from start.
+Adding a read would publish registration state nobody needs and a timestamp no client acts
+on.
+
+**A delivery failure is a plain `500`**, exactly as on `POST /api/v1/auth/otp`: the challenge
+committed, the cooldown applies, and the body says nothing about the destination. That
+answer is honest only while no sender distinguishes destinations, and today none does. **The
+unresolved provider requirement recorded above is now carried by the adapter rather than by
+the endpoint**: a real provider that rejects an invalid, unroutable or suppressed recipient
+synchronously must not surface that differently from a generic failure, or this becomes a
+deliverability oracle and — because suppression lists are built from past bounces — partly a
+"has this address been used here before" oracle. It cannot be satisfied before a provider
+exists; it must be satisfied by the slice that introduces one.
+
+**Registration's per-IP budgets are its own**, not the sign-in ones. A throttle buckets by
+its limiter name, so sharing would let a registration attempt spend a member's ability to
+sign in from the same network. The budgets that actually protect a person are unchanged and
+still destination-wide across every scope, so minting registrations cannot multiply what one
+address or one handset receives.
+
+**Mature registration is still not operational for real members.** Both senders fail closed
+in production — no SMS provider and no email provider has been selected — so no real member
+can receive either passcode, and nothing here fakes one. The API is the contract; delivery is
+a deployment question that still has no answer.
 
 ### Rate limiting
 

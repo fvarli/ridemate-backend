@@ -64,11 +64,28 @@ use RuntimeException;
  * registration row across the destination-wide advisory lock, so a busy address
  * would block an unrelated registration's row.
  *
- * NOT REACHABLE FROM OUTSIDE
+ * ITS PUBLIC CALLER, AND WHAT A DELIVERY FAILURE MAY SAY
  *
- * No route resolves this and no controller calls it. In production both senders
- * refuse — no SMS provider and no email provider has been selected — so a
- * caller that appeared today would fail closed on either channel.
+ * `POST /api/v1/registrations/otp` resolves this now. A delivery failure is not
+ * caught on the way out and becomes a `500`, exactly as it does on
+ * `POST /api/v1/auth/otp`: the challenge committed, the cooldown applies, and
+ * the caller is told that the server failed rather than anything about the
+ * destination.
+ *
+ * That answer is only honest while no sender distinguishes destinations, and
+ * today none does — both production senders refuse every send, and the local
+ * echo fails only on a filesystem error. **A provider adapter must keep it
+ * that way.** Real providers commonly reject an invalid, unroutable or
+ * suppressed recipient synchronously at submission; surfacing that as a
+ * different outcome from a generic failure would turn this endpoint into a
+ * deliverability oracle, and — because suppression lists are built from past
+ * bounces — partly into a "has this address been used here before" oracle. The
+ * adapter that introduces a provider owns that requirement; it cannot be
+ * satisfied here, because there is no provider to constrain.
+ *
+ * In production both senders refuse — no SMS provider and no email provider has
+ * been selected — so the endpoint fails closed on either channel, and mature
+ * registration is not operational.
  */
 final class SendRegistrationPasscode
 {
@@ -81,8 +98,9 @@ final class SendRegistrationPasscode
 
     /**
      * @throws InvalidIdentifier when the destination is not one of that kind.
-     * @throws RuntimeException when the registration has ended, or is already
-     *                          bound to a different destination on this channel.
+     * @throws RegistrationAdvanceRefused when the registration has ended, or is
+     *                                    already bound to a different destination
+     *                                    on this channel.
      * @throws SmsDeliveryFailed|EmailDeliveryFailed after the challenge has committed.
      */
     public function __invoke(Registration $registration, OtpChannel $channel, string $destination): void

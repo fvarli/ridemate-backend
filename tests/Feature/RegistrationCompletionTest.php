@@ -583,13 +583,26 @@ final class RegistrationCompletionTest extends TestCase
         self::assertStringNotContainsString('email', $encoded);
     }
 
-    /** Nothing public reaches any of this. */
-    public function test_no_route_resolves_the_completion_capability(): void
+    /**
+     * Completion is reached through a controller, and through nothing else.
+     *
+     * Phase 18 S4e published `POST /api/v1/registrations/complete`, so the
+     * older assertion — that no route uri mentions a registration — stopped
+     * being the invariant. Two things still are: the action is never a route's
+     * own target, so it can never be reached without the credential resolution
+     * and error mapping in front of it, and RideMate still has no `/register`
+     * endpoint in the password sense the word usually carries.
+     */
+    public function test_no_route_resolves_the_completion_capability_directly(): void
     {
         foreach (Route::getRoutes()->getRoutes() as $route) {
             self::assertStringNotContainsString(CompleteRegistration::class, $route->getActionName());
-            self::assertStringNotContainsString('registration', $route->uri());
-            self::assertStringNotContainsString('register', $route->uri());
+            self::assertStringNotContainsString('register/', $route->uri());
+            self::assertStringNotContainsString('api/v1/register', str_replace(
+                'api/v1/registrations',
+                '',
+                $route->uri(),
+            ));
         }
     }
 

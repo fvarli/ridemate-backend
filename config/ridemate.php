@@ -137,12 +137,29 @@ return [
     | Never persisted: the throttle key is derived at request time and lives
     | only in the cache row, which expires on its own.
     |
+    | THE REGISTRATION BUDGETS ARE SEPARATE FROM THE SIGN-IN ONES
+    |
+    | Laravel buckets a throttle by its LIMITER NAME, so reusing `rm-otp-request`
+    | for a registration send would let an abandoned registration attempt spend a
+    | member's ability to sign in from the same network. They are not the
+    | protection that matters either: the cooldown and the hourly cap counted
+    | from otp_challenges are keyed on (channel, destination) across every scope,
+    | so minting registrations cannot multiply what one address may receive.
+    |
+    | A registration is six requests at minimum — start, two sends, two verifies
+    | and a completion — and a member who fumbles a code sends more, so the send
+    | budget matches the sign-in one and the rest sit below it.
+    |
     */
 
     'rate_limits' => [
         'otp_request_per_ip_per_hour' => (int) env('RIDEMATE_LIMIT_OTP_REQUEST', 20),
         'otp_verify_per_ip_per_hour' => (int) env('RIDEMATE_LIMIT_OTP_VERIFY', 10),
         'refresh_per_ip_per_hour' => (int) env('RIDEMATE_LIMIT_REFRESH', 30),
+        'registration_start_per_ip_per_hour' => (int) env('RIDEMATE_LIMIT_REGISTRATION_START', 10),
+        'registration_otp_request_per_ip_per_hour' => (int) env('RIDEMATE_LIMIT_REGISTRATION_OTP_REQUEST', 20),
+        'registration_otp_verify_per_ip_per_hour' => (int) env('RIDEMATE_LIMIT_REGISTRATION_OTP_VERIFY', 10),
+        'registration_complete_per_ip_per_hour' => (int) env('RIDEMATE_LIMIT_REGISTRATION_COMPLETE', 10),
     ],
 
     /*

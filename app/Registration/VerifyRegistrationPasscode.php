@@ -59,12 +59,15 @@ use Illuminate\Support\Facades\DB;
  * cannot distinguish its own cases and neither does this, so a caller learns
  * nothing about a registration or a destination it does not hold.
  *
- * NOT REACHABLE FROM OUTSIDE
+ * ITS PUBLIC CALLER, AND WHAT IT STILL DOES NOT DO
  *
- * No route resolves this and no controller calls it. A successful verification
- * still creates no account, opens no session and issues no token: acting on two
- * proofs is `CompleteRegistration`, which is a separate transaction and equally
- * unreachable from outside.
+ * `POST /api/v1/registrations/otp/verify` resolves this now, through a request
+ * class that has nowhere to put a destination — so the property above is a fact
+ * about the wire contract as well as about this signature.
+ *
+ * A successful verification still creates no account, opens no session and
+ * issues no token. Acting on two proofs is `CompleteRegistration`, which is a
+ * separate transaction behind a separate endpoint.
  */
 final class VerifyRegistrationPasscode
 {

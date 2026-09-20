@@ -99,6 +99,13 @@ class AppServiceProvider extends ServiceProvider
             'rm-otp-request' => 'otp_request_per_ip_per_hour',
             'rm-otp-verify' => 'otp_verify_per_ip_per_hour',
             'rm-auth-refresh' => 'refresh_per_ip_per_hour',
+            // Registration's own buckets. Deliberately not the sign-in ones:
+            // a shared name is a shared bucket, so a registration attempt
+            // would be able to spend a member's ability to sign in.
+            'rm-registration-start' => 'registration_start_per_ip_per_hour',
+            'rm-registration-otp-request' => 'registration_otp_request_per_ip_per_hour',
+            'rm-registration-otp-verify' => 'registration_otp_verify_per_ip_per_hour',
+            'rm-registration-complete' => 'registration_complete_per_ip_per_hour',
         ];
 
         foreach ($limits as $name => $key) {
