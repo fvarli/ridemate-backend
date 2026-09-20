@@ -375,12 +375,23 @@ paths:
         cap are counted per destination across every scope, so opening more
         registrations cannot multiply what one address or one handset receives.
 
-        `500` includes a delivery failure: the passcode was recorded but could
-        not be handed to a provider, so a retry is subject to the usual
-        cooldown. It says nothing about the destination, and a provider adapter
-        must keep it that way — surfacing a per-recipient rejection differently
-        from a generic failure would make this a deliverability oracle. **Both
-        channels fail closed today**, because no provider has been selected.
+        **`202` means the request was accepted, and only that.** Not delivered,
+        not that the mailbox or handset exists, not that anybody was verified.
+        A failure to hand the passcode to the email provider is still `202`,
+        deliberately: providers reject an invalid, unroutable or suppressed
+        recipient at submission, and publishing that as a different status
+        would make this endpoint answer "does this mailbox exist?" — and,
+        because suppression lists are built from past bounces, partly "has this
+        address been used here before?". Proof is still presenting the actual
+        code, which nothing here hands out. Delivery failures are recorded
+        server-side against the challenge id.
+
+        `500` is an internal error, including an **SMS** delivery failure. That
+        channel has no provider selected, so its sender refuses every send
+        identically and distinguishes no recipient; the slice that introduces
+        an SMS provider owns the same normalization email already has.
+        **SMS still fails closed**, so a mature registration cannot yet be
+        completed by a real member.
       requestBody:
         required: true
         content:

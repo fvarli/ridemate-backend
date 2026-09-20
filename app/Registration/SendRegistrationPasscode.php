@@ -66,26 +66,30 @@ use RuntimeException;
  *
  * ITS PUBLIC CALLER, AND WHAT A DELIVERY FAILURE MAY SAY
  *
- * `POST /api/v1/registrations/otp` resolves this now. A delivery failure is not
- * caught on the way out and becomes a `500`, exactly as it does on
- * `POST /api/v1/auth/otp`: the challenge committed, the cooldown applies, and
- * the caller is told that the server failed rather than anything about the
- * destination.
+ * `POST /api/v1/registrations/otp` resolves this now. **Both delivery
+ * exceptions still leave this method**, and that is deliberate: an action that
+ * swallowed one would leave every other caller — and every test — unable to
+ * tell a send that happened from one that did not.
  *
- * That answer is only honest while no sender distinguishes destinations, and
- * today none does — both production senders refuse every send, and the local
- * echo fails only on a filesystem error. **A provider adapter must keep it
- * that way.** Real providers commonly reject an invalid, unroutable or
- * suppressed recipient synchronously at submission; surfacing that as a
- * different outcome from a generic failure would turn this endpoint into a
- * deliverability oracle, and — because suppression lists are built from past
- * bounces — partly into a "has this address been used here before" oracle. The
- * adapter that introduces a provider owns that requirement; it cannot be
- * satisfied here, because there is no provider to constrain.
+ * What the CONTROLLER does with `EmailDeliveryFailed` is a different question,
+ * and it answers it by returning `202` anyway. A real SMTP transport rejects
+ * an invalid, unroutable or suppressed recipient synchronously at submission;
+ * letting that surface as a `500` while a deliverable address got `202` would
+ * make the endpoint a mailbox-validity oracle, and — because suppression lists
+ * are built from past bounces — partly a "has this address been used here
+ * before" oracle. See `RequestRegistrationPasscodeController`.
  *
- * In production both senders refuse — no SMS provider and no email provider has
- * been selected — so the endpoint fails closed on either channel, and mature
- * registration is not operational.
+ * `SmsDeliveryFailed` still becomes a `500`, because no SMS provider has been
+ * selected and the refusing sender distinguishes no recipient. There is no
+ * oracle to close until one does.
+ *
+ * The warning below is what makes either failure findable. It is the whole
+ * server-side record, and it names the challenge and nothing else.
+ *
+ * Email delivery is operational in production once `RIDEMATE_EMAIL_DRIVER` is
+ * `laravel_mail` and `MAIL_*` names a real transport. SMS is not: that sender
+ * still refuses, so mature registration still cannot be completed by a real
+ * member.
  */
 final class SendRegistrationPasscode
 {

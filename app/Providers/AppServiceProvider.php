@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Providers;
 
 use App\Otp\Email\EmailSender;
+use App\Otp\Email\LaravelMailEmailSender;
 use App\Otp\Email\NullEmailSender;
 use App\Otp\Sms\LocalEchoSmsSender;
 use App\Otp\Sms\NullSmsSender;
@@ -47,20 +48,28 @@ class AppServiceProvider extends ServiceProvider
             };
         });
 
-        // SendEmailPasscode injects this, and nothing public calls
-        // SendEmailPasscode — there is no email route and no email on an
-        // account. So the binding decides HOW an email passcode would be
-        // delivered, not whether Email OTP is reachable. The default refuses,
-        // which is what a production deployment resolves today.
+        // `SendRegistrationPasscode` and `SendEmailPasscode` inject this. The
+        // binding decides HOW an email passcode is delivered; it does not
+        // decide what an email address entitles anyone to. The default still
+        // refuses, so a deployment that configures nothing fails closed rather
+        // than routing passcodes wherever MAIL_MAILER happens to point.
         $this->app->singleton(EmailSender::class, function (): EmailSender {
             $driver = config('ridemate.email.driver');
 
             return match ($driver) {
-                // The default, and it throws. RideMate has no email provider,
-                // and the alternative — quietly discarding, or handing the
-                // passcode to Laravel's stock mailer, which logs it — is worse
-                // than refusing. See NullEmailSender.
+                // The default, and it throws. Selecting a provider is a
+                // deliberate act; the alternative — quietly discarding, or
+                // handing the passcode to Laravel's stock mailer, which logs
+                // it — is worse than refusing. See NullEmailSender.
                 'null' => new NullEmailSender,
+
+                // Production delivery, through Laravel's own mail stack. Which
+                // transport that is belongs to config/mail.php and not to this
+                // file: the adapter names no provider. Resolved through the
+                // container so the framework injects the Mailer, and its
+                // constructor refuses a production deployment sitting on a
+                // mailer that records rather than delivers.
+                'laravel_mail' => $this->app->make(LaravelMailEmailSender::class),
 
                 // Same rule as SMS: an unrecognised driver is a configuration
                 // mistake, and substituting the refusing sender would turn a

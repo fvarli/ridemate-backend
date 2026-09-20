@@ -912,22 +912,94 @@ final class RegistrationEndpointTest extends TestCase
         }
     }
 
-    /** A delivery failure says nothing about the destination. */
-    public function test_a_delivery_failure_is_a_plain_internal_error(): void
+    /**
+     * CARRIES WEIGHT. A failed email delivery is indistinguishable from a
+     * successful one, byte for byte.
+     *
+     * THIS IS THE ORACLE TEST. A real SMTP transport rejects an invalid,
+     * unroutable or suppressed recipient synchronously; if that became a `500`
+     * while a deliverable address got `202`, the endpoint would answer "does
+     * this mailbox exist?" and — because suppression lists are built from past
+     * bounces — partly "has this address been used here before?". Two
+     * registrations, one whose delivery succeeds and one whose delivery is made
+     * to fail, are compared on both things a stranger can read: the status, and
+     * the response body in full rather than field by field — an added key would
+     * otherwise slip past.
+     */
+    public function test_a_failed_email_delivery_is_indistinguishable_from_a_delivered_one(): void
     {
+        $delivered = $this->send($this->start(), 'email', self::EMAIL);
+
         $this->email->fail();
+        $rejected = $this->send($this->start(), 'email', self::OTHER_EMAIL);
 
-        $response = $this->send($this->start(), 'email', self::EMAIL);
+        $delivered->assertStatus(202);
+        $rejected->assertStatus(202);
+        self::assertSame(
+            (string) $delivered->getContent(),
+            (string) $rejected->getContent(),
+            'the response distinguishes a rejected recipient from a deliverable one',
+        );
 
-        $response->assertStatus(500);
-        $response->assertJsonPath('error.code', ApiError::INTERNAL_ERROR);
-
-        $body = (string) $response->getContent();
-        self::assertStringNotContainsString(self::EMAIL, $body);
+        $body = (string) $rejected->getContent();
+        self::assertStringNotContainsString(self::OTHER_EMAIL, $body);
+        self::assertStringNotContainsString('error', $body);
 
         // The challenge committed before delivery was attempted, so the
         // cooldown applies and provoking a failure is not a way around it.
-        self::assertSame(1, OtpChallenge::query()->count());
+        self::assertSame(2, OtpChallenge::query()->count());
+    }
+
+    /**
+     * CARRIES WEIGHT. `202` is acceptance of the REQUEST and nothing more.
+     *
+     * A passcode nobody received still proves nothing: verification wants the
+     * actual code. The accepted response must not be mistakable for a step
+     * completed, so the registration that got it is still unproven and the
+     * codes the endpoint never delivered are still the only ones that work.
+     */
+    public function test_an_accepted_request_whose_delivery_failed_still_proves_nothing(): void
+    {
+        $credential = $this->start();
+        $this->email->fail();
+
+        $this->send($credential, 'email', self::EMAIL)->assertStatus(202);
+
+        $registration = Registration::query()->sole();
+        self::assertSame(self::EMAIL, $registration->email, 'the destination was not bound');
+        self::assertNull($registration->email_verified_at, 'acceptance counted as proof');
+
+        // The code exists on the row; it simply never left the building. A
+        // caller that did not receive it cannot guess it.
+        $this->postJson(self::VERIFY, [
+            'registration_credential' => $credential,
+            'channel' => 'email',
+            'code' => '000000',
+        ])->assertStatus(401);
+
+        self::assertNull(
+            Registration::query()->sole()->email_verified_at,
+            'a wrong code proved the channel',
+        );
+    }
+
+    /**
+     * A failed SMS delivery is still a `500`, and deliberately so.
+     *
+     * No SMS provider has been selected, so that sender refuses every send
+     * identically and distinguishes no recipient — there is no oracle to close.
+     * Asserted so the email normalization above cannot quietly be read as a
+     * blanket "swallow every delivery failure".
+     */
+    public function test_a_failed_sms_delivery_is_still_a_plain_internal_error(): void
+    {
+        $this->sms->fail();
+
+        $response = $this->send($this->start(), 'sms', self::PHONE);
+
+        $response->assertStatus(500);
+        $response->assertJsonPath('error.code', ApiError::INTERNAL_ERROR);
+        self::assertStringNotContainsString(self::PHONE, (string) $response->getContent());
     }
 
     /**

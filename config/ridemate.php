@@ -190,26 +190,30 @@ return [
     | Email delivery
     |--------------------------------------------------------------------------
     |
-    | `null` is the only supported value, and it throws. RideMate has selected
-    | no email provider, and this seam exists so that selecting one later is a
-    | configuration change rather than a redesign in the middle of an
-    | authentication flow.
+    | `null` is the default and it throws. `laravel_mail` is the production
+    | adapter: it hands the passcode to Laravel's own mail stack, which the
+    | pilot points at an SMTP endpoint. Any other value is a configuration
+    | error rather than a silent downgrade to the refusing sender.
     |
-    | There is an internal application capability that issues and verifies an
-    | email passcode, and it is not reachable from outside: no route resolves
-    | it, no controller calls it, and an account still has no email address. A
-    | configured sender would make delivery work, not make a feature exist.
-    | This key configures delivery.
+    | TWO KEYS, TWO QUESTIONS
     |
-    | Laravel's `config/mail.php` is framework skeleton this application never
-    | reads. It is not RideMate email delivery, and this driver is deliberately
-    | not a wrapper around it — `MAIL_MAILER` defaults to the log, which is the
-    | last place a passcode may go.
+    | This one decides WHETHER RideMate delivers email. `config/mail.php`
+    | decides HOW — transport, host, port, credentials, sender identity — and
+    | no RideMate code reads it. Keeping them apart is what stops a stray
+    | `MAIL_MAILER` from routing a passcode: `MAIL_MAILER` defaults to the log,
+    | which is the last place a live credential may go, and it reaches nothing
+    | until somebody deliberately sets this key to `laravel_mail`.
     |
-    | There is no `local_echo` counterpart. Nothing a developer uses issues an
-    | email passcode, and an echo file would have to write a full address and a
-    | live code to disk — a phone number can be truncated to its last four
-    | digits, and an address has no equivalent safe half.
+    | The reverse is guarded too. With `laravel_mail` selected, a production
+    | deployment whose Laravel mailer records rather than delivers — `log`,
+    | `array`, or a name `config/mail.php` does not define — refuses to
+    | resolve the sender at all. See `LaravelMailEmailSender`.
+    |
+    | There is no `local_echo` counterpart. An echo file would have to write a
+    | full address and a live code to disk — a phone number can be truncated to
+    | its last four digits, and an address has no equivalent safe half. A
+    | developer who needs to see a real message configures a real transport, or
+    | a local catcher, through `MAIL_*`.
     |
     */
 

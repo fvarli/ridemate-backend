@@ -22,13 +22,18 @@ use Tests\Support\CleansCommittedRows;
 use Tests\TestCase;
 
 /**
- * The email delivery seam: a contract, a refusing default, and nothing wired.
+ * The email delivery seam: a contract, a refusing default, and a surface that
+ * a configured provider does not widen.
  *
  * Two properties carry this file. The first is that the seam fails CLOSED —
  * the default refuses and an unrecognised driver is an error rather than a
  * silent downgrade to the refusing sender. The second is that having an
  * EmailSender in the container does not make Email OTP reachable: no route
  * issues one, and the existing passcode endpoint cannot be talked into one.
+ * That second property is why this file survived the arrival of a real
+ * adapter unchanged in substance — a provider makes delivery work, it does not
+ * make a feature exist. The production adapter itself is
+ * `ProductionEmailDeliveryTest`.
  *
  * The second property is asserted against CURRENT behaviour. The endpoint
  * ignores fields it does not declare, and this file does not change that to
@@ -71,8 +76,19 @@ final class EmailDeliverySeamTest extends TestCase
 
     // ------------------------------------------------------------ the seam
 
+    /**
+     * The driver is named explicitly, for the reason the SMS driver test below
+     * gives: a developer's `.env` may select the real adapter, and a test that
+     * asserted the ambient value would prove nothing but what that machine
+     * happens to be set to. That `null` is the SHIPPED default is a property of
+     * config/ridemate.php; that `null` resolves to a sender which refuses is
+     * this one, and `ProductionEmailDeliveryTest` holds the pair together.
+     */
     public function test_the_contract_resolves_through_the_container(): void
     {
+        config(['ridemate.email.driver' => 'null']);
+        $this->app->forgetInstance(EmailSender::class);
+
         self::assertInstanceOf(NullEmailSender::class, app(EmailSender::class));
     }
 
@@ -171,6 +187,11 @@ final class EmailDeliverySeamTest extends TestCase
 
         $email = new InMemoryEmailSender;
         $email->sendPasscode(self::EMAIL, self::CODE);
+
+        // Named, so the refusal under test is the refusing sender's and not
+        // whatever driver the machine's own .env happens to select.
+        config(['ridemate.email.driver' => 'null']);
+        $this->app->forgetInstance(EmailSender::class);
 
         try {
             app(EmailSender::class)->sendPasscode(self::EMAIL, self::CODE);

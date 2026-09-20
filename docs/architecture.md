@@ -216,11 +216,35 @@ An **email delivery seam** sits beside it — `App\Otp\Email\EmailSender`, one m
 provider concepts — with the same refusing default and the same rule that an unrecognised
 driver is a configuration error rather than a silent downgrade. There is deliberately no
 `local_echo` counterpart: a phone number can be truncated to its last four digits and an
-address has no equivalent safe half. Laravel's `config/mail.php` is framework skeleton this
-application never reads and is not RideMate email delivery.
+address has no equivalent safe half.
 
-**No email provider has been selected, and production email delivery is fail-closed.** The
-default driver throws, so a deployment that configures nothing refuses rather than discards.
+**Email delivery is operational.** `RIDEMATE_EMAIL_DRIVER=laravel_mail` resolves
+`LaravelMailEmailSender`, which hands the passcode to Laravel's own mail stack as an ordinary
+text message. No provider SDK and no new dependency: the thing on the other side is SMTP, and
+the framework already ships the transport, the message builder and the configuration for it.
+
+**Two keys, two questions.** `ridemate.email.driver` decides WHETHER RideMate delivers email;
+`config/mail.php` decides HOW, and no RideMate code reads it. That separation is what keeps
+the refusing default meaningful — `MAIL_MAILER` defaults to the log, which is the last place a
+live credential may go, and it can route nothing until somebody deliberately selects the
+adapter. Swapping endpoint, port, transport or sender identity is a `MAIL_*` change; the
+adapter names no provider and does not move.
+
+**The configuration guard runs the other way too.** With the adapter selected, a `production`
+deployment whose Laravel mailer is `log` or `array` refuses to resolve the sender at all. That
+is the sharpest failure in the chain because it does not error: `log` writes the passcode to a
+file and *reports success*, so delivery appears to work, nobody receives anything, and the
+only evidence is an absence. Refused at RESOLUTION, so a bad deployment stops at boot rather
+than at the first member's attempt — the same rule `LocalEchoSmsSender` follows. A mailer name
+`config/mail.php` does not define needs no guard of RideMate's: `MailManager` already refuses
+it when the adapter's `Mailer` is injected. Local and testing keep every convenience; the
+suite itself runs on `array`.
+
+**The pilot sender is a shared mailbox on a shared domain**, delivering through Zoho Mail's EU
+SMTP endpoint. The region is load-bearing — the non-EU host answers `535` for this account,
+which reads as a bad password and sends an operator hunting for the wrong thing. A RideMate
+sender identity, its domain and its DNS are production-hardening work this pilot has not done,
+and nothing in the code depends on which mailbox it is.
 
 #### Email OTP is an internal capability, not a feature
 
@@ -252,23 +276,44 @@ caller can keep. There is no registration state and no proof credential: what a 
 entitles anyone to is the registration slice's question, and inventing a token here to make
 this return something more satisfying would be answering it by accident.
 
-**A requirement now carried by the adapter, not by the endpoint.** A real provider commonly
-rejects an invalid, unroutable or suppressed recipient *synchronously*, at submission. If that
-surfaced as a failure while a deliverable address succeeded, the endpoint would become an
-address-validity oracle — and, because suppression lists are built from past bounces, partly a
-"has this address been used here before" oracle.
+**The oracle the provider would otherwise have created, and how it is closed.** A real SMTP
+transport rejects an invalid, unroutable or suppressed recipient *synchronously*, at
+submission. While no provider existed, every sender was destination-independent and a
+delivery failure on `POST /api/v1/registrations/otp` was a truthful `500`. A provider ends
+that: left alone, a deliverable address would get `202` and a rejected one `500`, and the
+endpoint would answer "does this mailbox exist?" — and, because suppression lists are built
+from past bounces, partly "has this address been used here before?".
 
-Phase 18 S4e created the endpoint — `POST /api/v1/registrations/otp` — and did **not** create
-the problem, because it added no provider. Every sender that exists is
-destination-independent: both production senders refuse every send, and the local echo fails
-only on a filesystem error. So a delivery failure there is a plain `500` saying nothing about
-the destination, exactly as on `POST /api/v1/auth/otp`, and that is truthful rather than a
-`202` faked over a failure.
+**So once the challenge has been issued, the email response is fixed at `202`.**
+`RequestRegistrationPasscodeController` catches `EmailDeliveryFailed` and answers exactly what
+it answers on success, byte for byte. `202` has always meant one thing — *the request was
+accepted* — and it still does: not delivered, not that the mailbox exists, not that anybody was
+verified. Proof is still presenting the actual code, which nothing on that path hands out.
 
-What the endpoint could not do is satisfy the requirement in advance. **It belongs to the
-slice that introduces a provider**: that adapter must map a per-recipient rejection onto the
-same outcome as a generic failure, or the oracle arrives with it. Nothing about how is
-assumed decided.
+**Classifying the transport's rejection is deliberately NOT done.** Splitting SMTP status or
+error codes into "recipient-specific" and "infrastructure" would rebuild the same oracle out
+of the provider's own vocabulary, and a provider's error taxonomy is not a security boundary.
+
+Normalization happens at the **request boundary only**. `SendRegistrationPasscode` still
+throws, so every internal caller and every test still learns that delivery failed; what is
+normalized is the one thing a stranger can observe. `SmsDeliveryFailed` is still a `500`,
+because no SMS provider has been selected and that sender refuses every send identically —
+there is no oracle to close until one arrives, and the slice that introduces it owns the same
+normalization.
+
+**A failure stays observable server-side, and says nothing about who it failed on.**
+`SendRegistrationPasscode` logs `otp.delivery_failed` with the challenge id; the adapter logs
+`otp.email.transport_failed` with the failing exception's CLASS. Both sit under the
+`request_id` every log line already carries. Nothing records the destination, the passcode or
+the transport's own response — an SMTP rejection routinely quotes the recipient back, so the
+transport exception is neither logged nor chained as a `previous` (a chained cause reaches the
+renderer in a debug build).
+
+**Residual risk, written down rather than hidden: timing.** Delivery is synchronous, so a
+rejected recipient may still be distinguishable by how long the request takes. Closing that
+means moving delivery off the request, which is async infrastructure this pilot does not have
+and will not invent for one endpoint. It is accepted for the demo/pilot and belongs to
+async-delivery hardening.
 
 Email addresses are **sensitive data**, on exactly the footing phone numbers are: an address is
 the member's identity and the thing an enumeration attempt is looking for. Neither an address
@@ -610,8 +655,8 @@ unresolved provider requirement recorded above is now carried by the adapter rat
 the endpoint**: a real provider that rejects an invalid, unroutable or suppressed recipient
 synchronously must not surface that differently from a generic failure, or this becomes a
 deliverability oracle and — because suppression lists are built from past bounces — partly a
-"has this address been used here before" oracle. It cannot be satisfied before a provider
-exists; it must be satisfied by the slice that introduces one.
+"has this address been used here before" oracle. The email slice satisfied it by fixing the
+response at `202` once the challenge has been issued; the SMS slice will owe the same.
 
 **Registration's per-IP budgets are its own**, not the sign-in ones. A throttle buckets by
 its limiter name, so sharing would let a registration attempt spend a member's ability to
@@ -619,10 +664,9 @@ sign in from the same network. The budgets that actually protect a person are un
 still destination-wide across every scope, so minting registrations cannot multiply what one
 address or one handset receives.
 
-**Mature registration is still not operational for real members.** Both senders fail closed
-in production — no SMS provider and no email provider has been selected — so no real member
-can receive either passcode, and nothing here fakes one. The API is the contract; delivery is
-a deployment question that still has no answer.
+**Mature registration is still not operational for real members.** The SMS sender fails closed
+in production — no SMS provider has been selected — so no real member can receive a phone
+passcode, and mature registration requires both. Email delivery is answered; SMS is not.
 
 ### Rate limiting
 

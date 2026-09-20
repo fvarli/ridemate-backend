@@ -305,13 +305,37 @@ final class RegistrationContractTest extends TestCase
         $this->assertMatchesOperation($response, self::SEND, 'post');
     }
 
+    /**
+     * The `500` shape is still described, and SMS is what still produces it.
+     *
+     * Email no longer can: a provider that rejected one recipient and accepted
+     * another would otherwise publish that difference as a status code. SMS has
+     * no provider at all, so its sender refuses every send identically and the
+     * documented internal-error response stays exercised by a real request.
+     */
     public function test_the_delivery_failure_matches_the_contract(): void
+    {
+        $this->sms->fail();
+
+        $response = $this->send($this->start(), 'sms', self::PHONE);
+
+        $response->assertStatus(500);
+        $this->assertMatchesOperation($response, self::SEND, 'post');
+    }
+
+    /**
+     * CARRIES WEIGHT. A failed email delivery answers the documented `202`.
+     *
+     * Held to the same operation as a successful send, so the contract cannot
+     * describe two shapes and let the provider choose between them.
+     */
+    public function test_a_failed_email_delivery_matches_the_accepted_contract(): void
     {
         $this->email->fail();
 
         $response = $this->send($this->start(), 'email', self::EMAIL);
 
-        $response->assertStatus(500);
+        $response->assertStatus(202);
         $this->assertMatchesOperation($response, self::SEND, 'post');
     }
 
