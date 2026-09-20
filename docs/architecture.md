@@ -272,7 +272,9 @@ principal the whole application must remember not to trust inside the table that
 what a principal is.
 
 So `registrations` holds it: a UUIDv7 id, a nullable canonical email and phone, a nullable
-verification timestamp for each, one `expires_at`, a `completed_at` and a credential hash.
+verification timestamp for each, one `expires_at`, a `completed_at` and a credential hash —
+plus, since the completion slice below, a nullable `account_id` recording which account the
+registration produced.
 The proofs are **columns rather than a child table**, for the reason `phone_verified_at` is
 a column — at most two rows per registration, of two known kinds — plus one the account case
 did not have: "both proven" is a `NOT NULL` pair the database can check, where "two rows
@@ -473,11 +475,39 @@ number is somebody's — very likely a member who signed up by phone before a se
 existed — and treating their row as this registration's outcome would hand a stranger their
 account for the price of one SMS. The transaction unwinds and the registration stays open.
 
-**`registrations` still has no `account_id`, and completion did not change that.** The
-exactly-once boundary rests on `completed_at` under the row lock and on the unique indexes,
-not on any ability to look the account back up; a linkage column would be a second copy of a
-fact, not the thing that makes completion safe. It becomes a column the day a verified
-identifier can change — see the migration.
+**`registrations.account_id` is durable provenance, and it is deliberately not reconstructed
+from email or phone.** The two columns answer two different questions. `completed_at` says
+completion happened, and is what makes the credential non-advanceable. `account_id` says
+**which exact account this registration produced**, which nothing else in the schema records.
+It is not a second copy of the first and it is not derivable: matching the registration's
+identifiers against `accounts` is an *inference*, sound only while a verified identifier
+cannot change and is never reused. Under a designed identifier-change flow it finds nothing;
+under recycling — which phone numbers genuinely are — it finds a **different** account and
+answers confidently with the wrong one, which is worse than answering nothing.
+
+The earlier decision to defer the column until identifiers became mutable was wrong for a
+reason its argument never reached: **the fact is knowable only inside the completion
+transaction and cannot be backfilled.** Adding it later would record provenance from that day
+forward and leave every earlier completion permanently unattributable.
+
+The column is nullable, carries a foreign key to `accounts.id` with **RESTRICT** on delete,
+is unique where non-null, and is bound to `completed_at` by a two-way CHECK: both NULL or
+both set, never one without the other. It is written in the same statement as `completed_at`,
+on the row already locked, so a completion cannot become two writes. RESTRICT rather than
+CASCADE — deleting an account must not silently delete the record of where it came from — and
+rather than SET NULL, which would destroy the one fact the column exists for while leaving a
+row that still claims completion. No account deletion path exists, so it refuses nothing
+today and forces the question to be answered by whoever ships deletion. **It decides nothing
+about registration retention**, which remains `LEGAL REVIEW REQUIRED`: a foreign key is not a
+retention policy, no duration may be inferred from it, and the constraint only ever restricts
+deleting an *account* — a registration row is as deletable as it ever was.
+
+Unique because one account is the product of at most one registration. That cannot be
+violated today — completion only ever INSERTs a fresh account and refuses every collision
+rather than adopting an existing row — which is precisely the `credential_hash` argument: the
+constraint turns "it cannot" into "it did not". `account_id` is provenance and **not** a
+replay credential; the credential's permanent uselessness after completion still rests on
+`completed_at` alone.
 
 **The credential dies here.** Once `completed_at` is set the registration is no longer
 advanceable, so `RegistrationService::resolve()` returns the same `null` it returns for an

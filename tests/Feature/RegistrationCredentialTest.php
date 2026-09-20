@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\CreatesAccounts;
 use Tests\TestCase;
 
 /**
@@ -38,6 +39,7 @@ use Tests\TestCase;
  */
 final class RegistrationCredentialTest extends TestCase
 {
+    use CreatesAccounts;
     use RefreshDatabase;
 
     private RegistrationService $registrations;
@@ -368,16 +370,26 @@ final class RegistrationCredentialTest extends TestCase
     }
 
     /**
-     * Written directly, because completion does not exist yet.
+     * Written directly rather than through `CompleteRegistration`, because what
+     * is under test here is the credential's refusal and not the transaction
+     * that causes it.
      *
-     * This slice implements no path that sets `completed_at`; the column is
-     * here so the refusal it causes can be proven before the slice that writes
-     * it arrives.
+     * Both columns, because the table's CHECK refuses one without the other: a
+     * completed registration names the account it produced. The account is a
+     * plain one, since nothing here reads it.
      */
     private function complete(string $registrationId): void
     {
+        $account = $this->createAccount('+9053200'.str_pad((string) self::$accounts++, 5, '0', STR_PAD_LEFT));
+
         DB::table('registrations')
             ->where('id', $registrationId)
-            ->update(['completed_at' => CarbonImmutable::now()]);
+            ->update([
+                'account_id' => $account->id,
+                'completed_at' => CarbonImmutable::now(),
+            ]);
     }
+
+    /** Distinct numbers, because one account per number is the whole rule. */
+    private static int $accounts = 0;
 }

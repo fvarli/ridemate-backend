@@ -177,7 +177,55 @@ final class RegistrationCompletionTest extends TestCase
         self::assertSame(AccountStatus::Active, $account->status);
         self::assertTrue($account->isActive());
 
-        self::assertNotNull(Registration::query()->findOrFail($registration->id)->completed_at);
+        // THE PROVENANCE. The registration names the exact account it produced,
+        // and names it atomically with the completion — the database refuses a
+        // row holding one without the other.
+        $fresh = Registration::query()->findOrFail($registration->id);
+        self::assertSame($account->id, $fresh->account_id);
+        self::assertNotNull($fresh->completed_at);
+
+        // Asserted against the row rather than the model, because the guarantee
+        // is the CHECK constraint's rather than Eloquent's.
+        $row = DB::table('registrations')->where('id', $registration->id)->first();
+        self::assertNotNull($row);
+        self::assertSame($account->id, $row->account_id);
+        self::assertNotNull($row->completed_at);
+    }
+
+    /**
+     * CARRIES WEIGHT. Provenance is stored, not inferred.
+     *
+     * The linkage names the account by id, so it would still answer correctly
+     * if the account's identifiers later changed or were reused — which is the
+     * whole reason it is a column rather than a lookup. Asserted here by
+     * showing that the stored id is the one that was actually inserted, not
+     * merely an account that happens to match the registration's email.
+     */
+    public function test_the_linkage_names_the_account_by_id_rather_than_by_identifier(): void
+    {
+        $registration = $this->proven();
+        $completed = ($this->complete)($registration, DeviceDescription::unknown());
+
+        self::assertSame(
+            $completed->account->id,
+            Registration::query()->findOrFail($registration->id)->account_id,
+        );
+
+        // The account's own identifiers are irrelevant to the linkage: blanking
+        // the address leaves provenance intact, where a lookup would lose it.
+        DB::table('accounts')->where('id', $completed->account->id)->update([
+            'email' => null,
+            'email_verified_at' => null,
+        ]);
+
+        self::assertSame(
+            $completed->account->id,
+            Registration::query()->findOrFail($registration->id)->account_id,
+        );
+        self::assertNull(
+            Account::query()->where('email', self::EMAIL)->first(),
+            'the address is gone, which is what a lookup would have needed',
+        );
     }
 
     /** One completion opens one ordinary session, and its access token works. */
@@ -202,9 +250,10 @@ final class RegistrationCompletionTest extends TestCase
     {
         $registration = $this->proven();
 
-        ($this->complete)($registration, DeviceDescription::unknown());
+        $completed = ($this->complete)($registration, DeviceDescription::unknown());
 
         self::assertNotNull($registration->completed_at);
+        self::assertSame($completed->account->id, $registration->account_id);
         self::assertFalse($registration->isAdvanceable());
     }
 
@@ -242,6 +291,12 @@ final class RegistrationCompletionTest extends TestCase
         self::assertSame(1, Account::query()->count(), 'a replay created a second account');
         self::assertSame(1, DB::table('auth_sessions')->count(), 'a replay minted a second session');
         self::assertSame(1, DB::table('auth_tokens')->count());
+
+        // And the provenance still names the one account that was produced.
+        self::assertSame(
+            Account::query()->firstOrFail()->id,
+            Registration::query()->findOrFail($registration->id)->account_id,
+        );
     }
 
     public function test_an_expired_registration_cannot_complete(): void
@@ -409,8 +464,10 @@ final class RegistrationCompletionTest extends TestCase
     /**
      * CARRIES WEIGHT. Never an account whose registration is still open.
      *
-     * The failure is injected exactly where it matters: on the write to
-     * `registrations`, after the account row has already been inserted.
+     * The failure is injected exactly where it matters: on the write that
+     * carries both the linkage and the completion, after the account row has
+     * already been inserted. No account, no linkage, no `completed_at`, no
+     * session.
      */
     public function test_a_failure_before_the_completion_commits_rolls_the_account_back(): void
     {
@@ -433,11 +490,14 @@ final class RegistrationCompletionTest extends TestCase
     }
 
     /**
-     * CARRIES WEIGHT. Never a completed registration with nothing to show.
+     * CARRIES WEIGHT. Never a completed registration with nothing to show, and
+     * the session is inside the same transaction as the rest.
      *
-     * Injected on the session insert, which happens after `completed_at` has
-     * been written — so a transaction that did not cover both would leave a
-     * registration marked done and no account anywhere.
+     * Injected on the session insert, which happens after the account and after
+     * the linkage-and-completion write — so a transaction that did not cover
+     * all three would leave a registration marked done, naming an account, with
+     * no session. Everything unwinds instead, which is what proves the initial
+     * token persistence shares the outer transaction rather than following it.
      */
     public function test_a_failure_after_the_completion_cannot_leave_it_without_an_account(): void
     {
@@ -613,10 +673,10 @@ final class RegistrationCompletionTest extends TestCase
         int $expectedAccounts = 0,
         int $expectedSessions = 0,
     ): void {
-        self::assertNull(
-            Registration::query()->findOrFail($registrationId)->completed_at,
-            'the registration was completed anyway',
-        );
+        $registration = Registration::query()->findOrFail($registrationId);
+
+        self::assertNull($registration->completed_at, 'the registration was completed anyway');
+        self::assertNull($registration->account_id, 'the registration kept a linkage it did not earn');
         self::assertSame($expectedAccounts, Account::query()->count());
         self::assertSame($expectedSessions, DB::table('auth_sessions')->count());
         self::assertSame($expectedSessions, DB::table('auth_tokens')->count());

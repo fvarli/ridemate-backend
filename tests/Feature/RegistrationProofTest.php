@@ -26,6 +26,7 @@ use Illuminate\Support\Facades\Route;
 use RuntimeException;
 use Symfony\Component\HttpKernel\Exception\TooManyRequestsHttpException;
 use Tests\Support\CleansCommittedRows;
+use Tests\Support\CreatesAccounts;
 use Tests\TestCase;
 
 /**
@@ -58,6 +59,7 @@ final class RegistrationProofTest extends TestCase
      */
     use CleansCommittedRows;
 
+    use CreatesAccounts;
     use DatabaseTruncation;
 
     /** @var list<string> */
@@ -585,7 +587,13 @@ final class RegistrationProofTest extends TestCase
         ($this->send)($registration, OtpChannel::Email, self::EMAIL);
         $code = $this->lastEmailCode();
 
-        $this->endRegistration($registration->id, ['completed_at' => CarbonImmutable::now()]);
+        // Both columns: the table's CHECK refuses a completion that names no
+        // account, which is the provenance invariant rather than anything this
+        // file is about.
+        $this->endRegistration($registration->id, [
+            'account_id' => $this->createAccount('+905329876543')->id,
+            'completed_at' => CarbonImmutable::now(),
+        ]);
 
         self::assertFalse(($this->verify)(Registration::query()->findOrFail($registration->id), OtpChannel::Email, $code));
         self::assertNull(Registration::query()->findOrFail($registration->id)->email_verified_at);

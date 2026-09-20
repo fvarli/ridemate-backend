@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\Account;
 use App\Models\Registration;
 use App\Otp\OtpChannel;
 use App\Registration\InvalidIdentifier;
@@ -12,7 +13,9 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use RuntimeException;
+use Tests\Support\CreatesAccounts;
 use Tests\TestCase;
 
 /**
@@ -29,6 +32,7 @@ use Tests\TestCase;
  */
 final class RegistrationPersistenceTest extends TestCase
 {
+    use CreatesAccounts;
     use RefreshDatabase;
 
     private const EMAIL = 'member@ridemate.invalid';
@@ -261,6 +265,132 @@ final class RegistrationPersistenceTest extends TestCase
         self::assertTrue(Registration::query()->findOrFail($registration->id)->isFullyProven());
     }
 
+    // ------------------------------------------------- completion provenance
+
+    /**
+     * CARRIES WEIGHT. An in-flight registration names no account and claims no
+     * completion, and the two are one state rather than two.
+     */
+    public function test_an_uncompleted_registration_has_neither_a_linkage_nor_a_completion(): void
+    {
+        $registration = $this->started();
+
+        self::assertNull($registration->account_id);
+        self::assertNull($registration->completed_at);
+    }
+
+    /**
+     * CARRIES WEIGHT. A completion that names no account is the provenance gap
+     * the column exists to close, and the database refuses to represent it.
+     *
+     * Asserted against the database rather than the application, for the reason
+     * the proof checks above are: a console command, a future migration or a
+     * manual UPDATE would all bypass a check written in PHP.
+     */
+    public function test_a_completion_without_its_account_is_refused(): void
+    {
+        $registration = $this->started();
+
+        $this->expectException(QueryException::class);
+
+        DB::table('registrations')->where('id', $registration->id)->update([
+            'account_id' => null,
+            'completed_at' => CarbonImmutable::now(),
+        ]);
+    }
+
+    /** And the reverse: an account claimed by a registration that never finished. */
+    public function test_a_linkage_without_its_completion_is_refused(): void
+    {
+        $registration = $this->started();
+        $account = $this->createAccount();
+
+        $this->expectException(QueryException::class);
+
+        DB::table('registrations')->where('id', $registration->id)->update([
+            'account_id' => $account->id,
+            'completed_at' => null,
+        ]);
+    }
+
+    /** Written together, they are accepted — which is the only legal pair. */
+    public function test_an_account_and_a_completion_are_accepted_together(): void
+    {
+        $registration = $this->started();
+        $account = $this->createAccount();
+
+        $this->completeWith($registration->id, $account->id);
+
+        $fresh = Registration::query()->findOrFail($registration->id);
+        self::assertSame($account->id, $fresh->account_id);
+        self::assertNotNull($fresh->completed_at);
+    }
+
+    /**
+     * CARRIES WEIGHT. One account is the product of at most one registration.
+     *
+     * Completion only ever inserts a fresh account and refuses every collision
+     * rather than adopting an existing row, so this cannot happen today. The
+     * constraint is what turns "it cannot" into "it did not".
+     */
+    public function test_two_registrations_cannot_claim_one_account(): void
+    {
+        $first = $this->started();
+        $second = $this->started();
+        $account = $this->createAccount();
+
+        $this->completeWith($first->id, $account->id);
+
+        $this->expectException(QueryException::class);
+
+        $this->completeWith($second->id, $account->id);
+    }
+
+    /** Provenance has to name an account that exists. */
+    public function test_a_linkage_to_an_unknown_account_is_refused(): void
+    {
+        $registration = $this->started();
+
+        $this->expectException(QueryException::class);
+
+        $this->completeWith($registration->id, (string) Str::uuid7());
+    }
+
+    /**
+     * CARRIES WEIGHT. RESTRICT, not CASCADE and not SET NULL.
+     *
+     * Deleting the account must not silently delete the record of where it came
+     * from, and must not blank the one column that holds it. No deletion flow
+     * exists, so this refuses nothing today; it forces the question to be
+     * answered by whoever ships deletion rather than resolved by a default
+     * nobody chose. It decides nothing about registration retention, which
+     * remains under legal review — and note that the registration row itself is
+     * as deletable as it ever was.
+     */
+    public function test_an_account_cannot_be_deleted_while_a_registration_names_it(): void
+    {
+        $registration = $this->started();
+        $account = $this->createAccount();
+        $this->completeWith($registration->id, $account->id);
+
+        try {
+            // In a savepoint: PostgreSQL aborts a whole transaction on the
+            // first failed statement, and RefreshDatabase is holding one, so
+            // the assertions below could not otherwise run.
+            DB::transaction(static fn () => DB::table('accounts')->where('id', $account->id)->delete());
+            self::fail('the account was deleted out from under its provenance');
+        } catch (QueryException) {
+            // expected
+        }
+
+        self::assertNotNull(Account::query()->find($account->id));
+        self::assertSame($account->id, Registration::query()->findOrFail($registration->id)->account_id);
+
+        // The registration, however, is not held down by the constraint.
+        DB::table('registrations')->where('id', $registration->id)->delete();
+        self::assertNull(Registration::query()->find($registration->id));
+    }
+
     /**
      * Two registrations cannot share a credential, or one credential would
      * resolve two aggregates. It cannot happen by chance; the constraint is
@@ -282,9 +412,15 @@ final class RegistrationPersistenceTest extends TestCase
      * The row holds proof and nothing else.
      *
      * Every column named here was argued for; a new one arriving without an
-     * argument is the failure this catches. `account_id`, a step, a status and
-     * anything about a device or a profile are absent on purpose — see the
-     * migration.
+     * argument is the failure this catches. A step, a status and anything about
+     * a device or a profile are absent on purpose — see the migration.
+     *
+     * `account_id` is present, and it is the one column that arrived after the
+     * table did. It is durable provenance rather than a derived convenience:
+     * matching the identifiers against `accounts` answers the question only
+     * while a verified identifier cannot change and is never reused, and it is
+     * a fact knowable only inside the completion transaction, so no later
+     * migration could reconstruct it.
      */
     public function test_the_registration_row_holds_nothing_it_does_not_need(): void
     {
@@ -297,6 +433,7 @@ final class RegistrationPersistenceTest extends TestCase
             ->all();
 
         self::assertSame([
+            'account_id',
             'completed_at',
             'created_at',
             'credential_hash',
@@ -314,6 +451,19 @@ final class RegistrationPersistenceTest extends TestCase
     private function started(): Registration
     {
         return Registration::query()->findOrFail($this->registrations->start()->registrationId);
+    }
+
+    /**
+     * Completion written directly, because what is under test here is what the
+     * DATABASE guarantees about the pair — `CompleteRegistration` has its own
+     * file for what the transaction does.
+     */
+    private function completeWith(string $registrationId, string $accountId): void
+    {
+        DB::table('registrations')->where('id', $registrationId)->update([
+            'account_id' => $accountId,
+            'completed_at' => CarbonImmutable::now(),
+        ]);
     }
 
     /**

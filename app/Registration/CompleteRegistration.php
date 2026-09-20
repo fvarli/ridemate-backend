@@ -18,11 +18,24 @@ use Illuminate\Support\Facades\DB;
  *
  * THE INVARIANT, IN ONE SENTENCE
  *
- * A registration either produced an account and is marked completed, or it did
- * neither. There is no ordering of failures that leaves an account whose
- * registration is still open, and none that leaves a completed registration
- * with nothing to show for it — both halves commit together or neither does,
- * which is why this owns the transaction rather than handing pieces of it out.
+ * A registration either produced an account, names it, and is marked
+ * completed — or it did none of those. There is no ordering of failures that
+ * leaves an account whose registration is still open, and none that leaves a
+ * completed registration with nothing to show for it. All of it commits
+ * together or none does, which is why this owns the transaction rather than
+ * handing pieces of it out.
+ *
+ * THE ACCOUNT IS NAMED, NOT LOOKED UP AFTERWARDS
+ *
+ * `registrations.account_id` is written in the same statement as
+ * `completed_at`, and the table's CHECK refuses one without the other. The two
+ * answer different questions — whether completion happened, and which account
+ * is its product — and only the first is derivable from anything else. Matching
+ * the registration's identifiers against `accounts` later is an inference that
+ * holds only while a verified identifier cannot change and is never reused; it
+ * would answer with the WRONG account rather than with nothing once either
+ * stops being true. The fact is knowable only here, and nothing could
+ * reconstruct it later, which is why it is stored rather than recomputed.
  *
  * WHAT IS PRESERVED, AND WHY IT IS NOT `now()`
  *
@@ -116,10 +129,15 @@ final class CompleteRegistration
 
             $account = $this->createAccount($email, $emailVerifiedAt, $phone, $phoneVerifiedAt);
 
-            // The consumption. After this the credential resolves to nothing,
-            // so it can neither advance this registration nor mint a second
-            // session — a client that loses the response below recovers by
-            // signing in, not by presenting this again.
+            // The consumption AND the provenance, in one statement on the row
+            // already held. `completed_at` says completion happened, which is
+            // what makes the credential resolve to nothing afterwards — a
+            // client that loses the response below recovers by signing in, not
+            // by presenting this again. `account_id` says which account this
+            // registration produced, which nothing else records and which no
+            // later migration could reconstruct. The CHECK on the table refuses
+            // either without the other, so this cannot become two writes.
+            $locked->account_id = $account->id;
             $locked->completed_at = CarbonImmutable::now();
             $locked->save();
 

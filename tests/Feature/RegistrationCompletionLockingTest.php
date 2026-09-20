@@ -149,11 +149,17 @@ final class RegistrationCompletionLockingTest extends TestCase
                 'completion did not wait for the registration row',
             );
 
-            // The winner finishes: one account, and the registration consumed.
-            $this->insertAccount($second, self::EMAIL, self::PHONE);
+            // The winner finishes: one account, and the registration consumed
+            // AND naming it. Both columns, because the CHECK refuses one
+            // without the other — a winner could not leave provenance behind
+            // even by writing the two separately.
+            $winner = $this->insertAccount($second, self::EMAIL, self::PHONE);
             $second->table('registrations')
                 ->where('id', $registration->id)
-                ->update(['completed_at' => CarbonImmutable::now()]);
+                ->update([
+                    'account_id' => $winner,
+                    'completed_at' => CarbonImmutable::now(),
+                ]);
 
             $second->commit();
         } catch (\Throwable $e) {
@@ -169,6 +175,13 @@ final class RegistrationCompletionLockingTest extends TestCase
 
         self::assertSame(1, Account::query()->count(), 'the loser created a second account');
         self::assertSame(0, DB::table('auth_sessions')->count(), 'the loser opened a session');
+
+        // Exactly one durable linkage, and it is the winner's.
+        self::assertSame(
+            Account::query()->firstOrFail()->id,
+            Registration::query()->findOrFail($registration->id)->account_id,
+        );
+        self::assertSame(1, DB::table('registrations')->whereNotNull('account_id')->count());
     }
 
     /**
@@ -182,7 +195,9 @@ final class RegistrationCompletionLockingTest extends TestCase
     public function test_a_completion_claiming_an_uncommitted_email_blocks_and_then_refuses(): void
     {
         $this->assertTheIndexArbitrates(
-            claimant: fn (ConnectionInterface $c) => $this->insertAccount($c, self::EMAIL, self::OTHER_PHONE),
+            claimant: function (ConnectionInterface $c): void {
+                $this->insertAccount($c, self::EMAIL, self::OTHER_PHONE);
+            },
             expected: RefusalReason::EmailAlreadyRegistered,
         );
 
@@ -193,7 +208,9 @@ final class RegistrationCompletionLockingTest extends TestCase
     public function test_a_completion_claiming_an_uncommitted_phone_blocks_and_then_refuses(): void
     {
         $this->assertTheIndexArbitrates(
-            claimant: fn (ConnectionInterface $c) => $this->insertAccount($c, null, self::PHONE),
+            claimant: function (ConnectionInterface $c): void {
+                $this->insertAccount($c, null, self::PHONE);
+            },
             expected: RefusalReason::PhoneAlreadyRegistered,
         );
 
@@ -225,10 +242,9 @@ final class RegistrationCompletionLockingTest extends TestCase
                 'the insert did not wait for the uncommitted account',
             );
 
-            self::assertNull(
-                Registration::query()->findOrFail($registration->id)->completed_at,
-                'the registration was completed while its account was refused',
-            );
+            $blockedRow = Registration::query()->findOrFail($registration->id);
+            self::assertNull($blockedRow->completed_at, 'the registration was completed while its account was refused');
+            self::assertNull($blockedRow->account_id, 'the registration named an account it never created');
 
             $second->commit();
         } catch (\Throwable $e) {
@@ -243,7 +259,10 @@ final class RegistrationCompletionLockingTest extends TestCase
         );
 
         self::assertSame(1, Account::query()->count(), 'a second account was created');
-        self::assertNull(Registration::query()->findOrFail($registration->id)->completed_at);
+
+        $refused = Registration::query()->findOrFail($registration->id);
+        self::assertNull($refused->completed_at);
+        self::assertNull($refused->account_id, 'a refused completion left a linkage behind');
         self::assertSame(0, DB::table('auth_sessions')->count());
     }
 
@@ -289,16 +308,20 @@ final class RegistrationCompletionLockingTest extends TestCase
         app(CompleteRegistration::class)($registration, DeviceDescription::unknown());
     }
 
-    /** An account written directly, on whichever connection is racing. */
+    /**
+     * An account written directly, on whichever connection is racing. Returns
+     * its id, so a simulated winner can also write its provenance.
+     */
     private function insertAccount(
         ConnectionInterface $connection,
         ?string $email,
         string $phone,
-    ): void {
+    ): string {
         $now = CarbonImmutable::now();
+        $id = (string) Str::uuid7();
 
         $connection->table('accounts')->insert([
-            'id' => (string) Str::uuid7(),
+            'id' => $id,
             'phone_e164' => $phone,
             'phone_verified_at' => $now,
             'email' => $email,
@@ -307,6 +330,8 @@ final class RegistrationCompletionLockingTest extends TestCase
             'created_at' => $now,
             'updated_at' => $now,
         ]);
+
+        return $id;
     }
 
     private function proven(): Registration

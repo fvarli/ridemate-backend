@@ -21,6 +21,18 @@ use Illuminate\Database\Eloquent\Model;
  * `isFullyProven()`. What is done about either answer belongs to
  * `App\Registration\CompleteRegistration`, which owns the transaction.
  *
+ * `completed_at` AND `account_id` ANSWER TWO DIFFERENT QUESTIONS
+ *
+ * The first says completion happened, and is what makes the credential
+ * non-advanceable. The second says WHICH account this registration produced,
+ * which nothing else in the schema records — it is durable provenance,
+ * deliberately not reconstructed by matching `email` or `phone_e164` against
+ * `accounts`. That match is an inference, sound only while identifiers are
+ * immutable and never reused, and it answers with the wrong account rather than
+ * with nothing once either assumption fails. The two columns are written
+ * together, in one statement, and a database CHECK refuses a row holding one
+ * without the other.
+ *
  * @property string $id
  * @property string $credential_hash
  * @property string|null $email
@@ -28,6 +40,7 @@ use Illuminate\Database\Eloquent\Model;
  * @property CarbonImmutable|null $email_verified_at
  * @property CarbonImmutable|null $phone_verified_at
  * @property CarbonImmutable $expires_at
+ * @property string|null $account_id
  * @property CarbonImmutable|null $completed_at
  * @property CarbonImmutable $created_at
  */
