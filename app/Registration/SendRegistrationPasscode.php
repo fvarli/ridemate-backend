@@ -88,9 +88,10 @@ use RuntimeException;
  *
  * A production-capable email adapter exists behind `RIDEMATE_EMAIL_DRIVER`,
  * and selecting it is not the same as delivery working: that still needs a
- * valid SMTP credential and a smoke test proving a message arrives, neither of
- * which has happened. SMS has no provider at all. So mature registration still
- * cannot be completed by a real member.
+ * smoke test proving a message arrives, and the one attempt so far never
+ * reached SMTP — the endpoint was unreachable from the network it ran on. SMS
+ * has no provider at all. So mature registration still cannot be completed by
+ * a real member.
  */
 final class SendRegistrationPasscode
 {

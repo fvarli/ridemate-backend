@@ -224,12 +224,19 @@ passcode to Laravel's own mail stack as an ordinary text message. No provider SD
 dependency: the thing on the other side is SMTP, and the framework already ships the
 transport, the message builder and the configuration for it.
 
-**Two things stand between that and operational email delivery**, and neither is code. A valid
-SMTP credential has to be configured for the pilot sender — none is present in this repository
-and none ever may be — and a controlled delivery smoke test has to confirm that a message
-actually arrives. Until both are done, the adapter is proven by its tests and by nothing else:
-the suite sends through Laravel's `array` transport and opens no socket, so a green suite says
-the right message is produced, not that anybody received one.
+**What stands between that and operational email delivery is not code.** A controlled delivery
+smoke test has to confirm that a message actually arrives, and it has not. One was attempted
+against the pilot sender with a credential configured in a local ignored environment file —
+no credential is present in this repository and none ever may be — and it failed before SMTP
+began: `smtp.zoho.eu:587` could not be reached from any tested local network path, so the
+connection timed out at the TCP layer. **SMTP authentication was therefore never reached, and
+nothing about that credential's validity was established either way.**
+
+So the adapter is proven by its tests and by nothing else: the suite sends through Laravel's
+`array` transport and opens no socket, so a green suite says the right message is produced,
+not that anybody received one. **Real email delivery remains unverified.** Reaching the
+endpoint from a network that can route to it is deferred pilot-readiness work, not a defect in
+this slice.
 
 **Two keys, two questions.** `ridemate.email.driver` decides WHETHER RideMate delivers email;
 `config/mail.php` decides HOW, and no RideMate code reads it. That separation is what keeps
